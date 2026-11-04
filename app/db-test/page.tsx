@@ -26,7 +26,8 @@ export default function DatabaseTest() {
           setStatus("Supabase Connected Successfully!");
         }
       } catch (err) {
-        setStatus("Connection Failed");
+  setStatus(err instanceof Error ? err.message : String(err));
+      }
       }
     }
 

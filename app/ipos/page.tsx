@@ -2,22 +2,26 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
 
 type IPO = {
   uuid: string;
   company_name: string;
-  price_band?: string | null;
-  open_date?: string | null;
-  close_date?: string | null;
-  closing_date?: string | null;
-  listing_date?: string | null;
-  status?: string | null;
-  created_at?: string | null;
+  price_band: string | null;
+  open_date: string | null;
+  closing_date: string | null;
+  listing_date: string | null;
+  status: string | null;
+  created_at: string | null;
 };
 
-function formatDate(date?: string | null) {
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+function formatDate(date: string | null) {
   if (!date) return "Not announced";
 
   return new Date(date + "T00:00:00").toLocaleDateString("en-IN", {
@@ -27,239 +31,176 @@ function formatDate(date?: string | null) {
   });
 }
 
-export default function IPOPage() {
-  const params = useParams();
-  const id = params.id as string;
-
-  const [ipo, setIpo] = useState<IPO | null>(null);
+export default function IPOListPage() {
+  const [ipos, setIpos] = useState<IPO[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
-    async function fetchIPO() {
+    async function fetchIPOs() {
       try {
-        const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-        const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-        if (!url || !key) {
-          throw new Error("Supabase Environment Variables missing. Check Vercel settings.");
-        }
-
-        if (!id) {
-          throw new Error("IPO ID is missing from the URL.");
-        }
-
-        const supabase = createClient(url, key);
-
-        const { data, error: fetchError } = await supabase
+        const { data, error } = await supabase
           .from("ipo_master")
           .select("*")
-          .eq("uuid", id)
-          .maybeSingle();
+          .order("created_at", { ascending: false });
 
-        if (fetchError) {
-          throw new Error(
-            `Supabase Error: ${fetchError.message} (Code: ${fetchError.code || "N/A"})`
-          );
-        }
+        if (error) throw error;
 
-        if (!data) {
-          throw new Error(
-            `IPO record not found for ID: ${id}. Check whether this UUID exists in ipo_master and is readable under RLS.`
-          );
-        }
-
-        setIpo(data as IPO);
+        setIpos((data || []) as IPO[]);
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : "Unknown error occurred."
+          err instanceof Error ? err.message : "Unable to load IPOs."
         );
       } finally {
         setLoading(false);
       }
     }
 
-    fetchIPO();
-  }, [id]);
+    fetchIPOs();
+  }, []);
 
-  if (loading) {
-    return (
-      <main style={{
-        minHeight: "100vh",
-        background: "#061421",
-        color: "white",
-        display: "grid",
-        placeItems: "center",
-        fontFamily: "Arial",
-      }}>
-        <h2>Loading IPO Details...</h2>
-      </main>
-    );
-  }
-
-  if (error || !ipo) {
-    return (
-      <main style={{
-        minHeight: "100vh",
-        background: "#061421",
-        color: "white",
-        display: "grid",
-        placeItems: "center",
-        padding: 20,
-        fontFamily: "Arial",
-      }}>
-        <div style={{
-          maxWidth: 650,
-          width: "100%",
-          padding: 28,
-          borderRadius: 18,
-          background: "#10283a",
-          border: "1px solid #315064",
-        }}>
-          <h1 style={{ color: "#ff7777", fontSize: 28 }}>
-            IPO Details Not Available
-          </h1>
-          <p style={{ color: "#d1dce5", lineHeight: 1.7, overflowWrap: "anywhere" }}>
-            {error || "IPO record not found."}
-          </p>
-          <a href="/ipos" style={{
-            display: "inline-block",
-            marginTop: 18,
-            padding: "12px 20px",
-            borderRadius: 10,
-            background: "#39e5aa",
-            color: "#06221d",
-            fontWeight: 800,
-            textDecoration: "none",
-          }}>
-            ← Back to IPO List
-          </a>
-        </div>
-      </main>
-    );
-  }
-
-  const closingDate = ipo.close_date || ipo.closing_date;
+  const filteredIPOs = ipos.filter((ipo) =>
+    ipo.company_name.toLowerCase().includes(search.toLowerCase())
+  );
 
   return (
-    <main style={{
-      minHeight: "100vh",
-      background: "#061421",
-      color: "#f5f9ff",
-      fontFamily: "Arial, sans-serif",
-    }}>
-      <style>{`
-        * { box-sizing: border-box; }
-        .ipo-container { max-width: 1100px; margin: auto; padding: 35px 20px 60px; }
-        .ipo-panel { background: linear-gradient(145deg,#102b3d,#0b1c2b); border: 1px solid #24465a; border-radius: 18px; padding: 24px; }
-        .ipo-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(200px,1fr)); gap: 15px; margin-top: 25px; }
-        .ipo-stat { padding: 18px; border-radius: 13px; background: #ffffff0b; border: 1px solid #ffffff16; }
-        .ipo-label { color: #9eb5c5; font-size: 14px; }
-        .ipo-value { margin-top: 9px; font-size: 19px; font-weight: 800; color: #39e5aa; }
-        .ipo-section { margin-top: 22px; }
-        .ipo-back { color: #39e5aa; text-decoration: none; }
-      `}</style>
+    <main className="min-h-screen bg-[#07111f] text-white">
+      <header className="border-b border-white/10 bg-[#0b1929]">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-5">
+          <Link href="/" className="text-2xl font-black text-teal-400">
+            Capital360IPO
+          </Link>
+          <Link href="/" className="text-sm text-gray-300 hover:text-teal-400">
+            Home
+          </Link>
+        </div>
+      </header>
 
-      <div className="ipo-container">
-        <a href="/ipos" className="ipo-back">← Back to All IPOs</a>
+      <section className="mx-auto max-w-6xl px-5 py-10">
+        <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-[#142d42] to-[#0b1929] p-7 sm:p-10">
+          <p className="font-semibold tracking-widest text-teal-400">
+            CAPITAL360IPO
+          </p>
 
-        <section className="ipo-panel" style={{ marginTop: 25 }}>
-          <span style={{
-            display: "inline-block",
-            background: "#39e5aa20",
-            color: "#39e5aa",
-            padding: "7px 14px",
-            borderRadius: 30,
-            fontWeight: 800,
-            fontSize: 13,
-          }}>
-            {ipo.status || "IPO"}
-          </span>
-
-          <h1 style={{
-            fontSize: "clamp(30px,6vw,48px)",
-            margin: "20px 0 10px",
-          }}>
-            {ipo.company_name}
+          <h1 className="mt-4 text-3xl font-black sm:text-5xl">
+            IPO Information Center
           </h1>
 
-          <p style={{ color: "#9eb5c5" }}>
-            Complete IPO information by Capital360IPO
+          <p className="mt-4 max-w-2xl leading-7 text-gray-300">
+            Explore IPO details, important dates, price bands and verified
+            market information in one place.
           </p>
 
-          <div className="ipo-grid">
-            <div className="ipo-stat">
-              <div className="ipo-label">Price Band</div>
-              <div className="ipo-value">{ipo.price_band || "Not announced"}</div>
-            </div>
-
-            <div className="ipo-stat">
-              <div className="ipo-label">Opening Date</div>
-              <div className="ipo-value">{formatDate(ipo.open_date)}</div>
-            </div>
-
-            <div className="ipo-stat">
-              <div className="ipo-label">Closing Date</div>
-              <div className="ipo-value">{formatDate(closingDate)}</div>
-            </div>
-
-            <div className="ipo-stat">
-              <div className="ipo-label">Listing Date</div>
-              <div className="ipo-value">{formatDate(ipo.listing_date)}</div>
-            </div>
+          <div className="mt-7">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search IPO by company name..."
+              className="w-full max-w-xl rounded-xl border border-white/15 bg-[#07111f] px-5 py-4 text-white outline-none placeholder:text-gray-500 focus:border-teal-400"
+            />
           </div>
-        </section>
+        </div>
 
-        <section className="ipo-panel ipo-section">
-          <h2 style={{ fontSize: 23 }}>IPO Overview</h2>
-          <p style={{ color: "#b7c9d7", lineHeight: 1.8 }}>
-            {ipo.company_name} IPO details and important dates are shown above.
-            Additional verified information will be displayed as it is added
-            to the Capital360IPO database.
-          </p>
-        </section>
+        <div className="mt-10 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-bold">All IPOs</h2>
+            <p className="mt-1 text-sm text-gray-400">
+              IPO information from our database
+            </p>
+          </div>
 
-        <section className="ipo-panel ipo-section">
-          <h2 style={{ fontSize: 23 }}>More IPO Information</h2>
-          <div className="ipo-grid">
-            {[
-              "GMP History",
-              "Subscription Details",
-              "Company Profile",
-              "Financial Performance",
-              "Promoters & Risks",
-              "Allotment & Listing",
-              "Official Documents",
-              "Frequently Asked Questions",
-            ].map((item) => (
-              <div className="ipo-stat" key={item}>
-                <strong>{item}</strong>
-                <p style={{ color: "#9eb5c5", fontSize: 13 }}>
-                  Verified information will be added here.
-                </p>
-              </div>
+          <span className="rounded-full border border-teal-400/20 bg-teal-400/10 px-4 py-2 text-sm font-semibold text-teal-300">
+            {filteredIPOs.length} IPOs
+          </span>
+        </div>
+
+        {loading && (
+          <div className="py-20 text-center text-lg text-gray-300">
+            Loading IPO information...
+          </div>
+        )}
+
+        {!loading && error && (
+          <div className="mt-8 rounded-2xl border border-red-400/20 bg-red-400/10 p-6 text-red-300">
+            Unable to load IPOs: {error}
+          </div>
+        )}
+
+        {!loading && !error && filteredIPOs.length === 0 && (
+          <div className="mt-8 rounded-2xl border border-white/10 bg-[#101e2e] p-10 text-center">
+            <h3 className="text-xl font-bold">No IPO Found</h3>
+            <p className="mt-2 text-gray-400">
+              No IPO matches your search.
+            </p>
+          </div>
+        )}
+
+        {!loading && !error && filteredIPOs.length > 0 && (
+          <div className="mt-6 grid gap-5 md:grid-cols-2">
+            {filteredIPOs.map((ipo) => (
+              <article
+                key={ipo.uuid}
+                className="rounded-2xl border border-white/10 bg-[#101e2e] p-6 transition hover:border-teal-400/50"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <h3 className="text-xl font-bold">
+                    {ipo.company_name}
+                  </h3>
+
+                  <span className="rounded-full bg-teal-400/10 px-3 py-1 text-xs font-semibold text-teal-300">
+                    {ipo.status || "IPO"}
+                  </span>
+                </div>
+
+                <div className="mt-6 grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-gray-400">Price Band</p>
+                    <p className="mt-1 font-bold">
+                      {ipo.price_band || "Not announced"}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-gray-400">Opening Date</p>
+                    <p className="mt-1 font-bold">
+                      {formatDate(ipo.open_date)}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-gray-400">Closing Date</p>
+                    <p className="mt-1 font-bold">
+                      {formatDate(ipo.closing_date)}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-gray-400">Listing Date</p>
+                    <p className="mt-1 font-bold">
+                      {formatDate(ipo.listing_date)}
+                    </p>
+                  </div>
+                </div>
+
+                <Link
+                  href={`/ipos/${encodeURIComponent(ipo.uuid)}`}
+                  className="mt-7 flex w-full items-center justify-center rounded-xl bg-teal-400 px-5 py-3 font-bold text-[#06221d] transition hover:bg-teal-300"
+                >
+                  View Full IPO Details →
+                </Link>
+              </article>
             ))}
           </div>
-          <p style={{
-            color: "#e9c46a",
-            fontSize: 13,
-            marginTop: 22,
-            lineHeight: 1.7,
-          }}>
-            Note: GMP is unofficial and speculative. Always verify IPO
-            information with official exchange and issuer documents.
-          </p>
-        </section>
+        )}
 
-        <footer style={{
-          textAlign: "center",
-          color: "#8299aa",
-          padding: "30px 0",
-          fontSize: 13,
-        }}>
-          © {new Date().getFullYear()} Capital360IPO. Informational purposes only.
-        </footer>
-      </div>
+        <div className="mt-12 border-t border-white/10 pt-6 text-center text-xs leading-6 text-gray-500">
+          © Capital360IPO. Informational purposes only.
+          Verify IPO information with official exchange and issuer documents.
+          GMP is unofficial and speculative.
+        </div>
+      </section>
     </main>
   );
 }

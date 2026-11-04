@@ -1,6 +1,6 @@
 # Capital360IPO
 
-Starter website for IPO, stock-market and financial news.
+Starter website for IPO, stock-market and financial news. 
 
 ## GitHub upload
 Extract this ZIP first. Upload the CONTENTS of the extracted folder to the root of your GitHub repository. `package.json` and the `app` folder must be visible at the repository root.

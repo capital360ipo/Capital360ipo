@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
@@ -8,14 +7,19 @@ export default function DatabaseTest() {
   const [status, setStatus] = useState("Checking connection...");
 
   useEffect(() => {
-    async function testConnection() {
+    const testConnection = async () => {
       try {
-        const supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-        );
+        const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-        const { data, error } = await supabase
+        if (!url || !key) {
+          setStatus("Supabase Environment Variables Missing");
+          return;
+        }
+
+        const supabase = createClient(url, key);
+
+        const { error } = await supabase
           .from("ipo_master")
           .select("*")
           .limit(1);
@@ -26,16 +30,24 @@ export default function DatabaseTest() {
           setStatus("Supabase Connected Successfully!");
         }
       } catch (err) {
-  setStatus(err instanceof Error ? err.message : String(err));
+        setStatus(
+          err instanceof Error ? err.message : String(err)
+        );
       }
-      }
-    }
+    };
 
-    testConnection();
+    void testConnection();
   }, []);
 
   return (
-    <main style={{ padding: "30px", color: "white", background: "#102c2c", minHeight: "100vh" }}>
+    <main
+      style={{
+        padding: "30px",
+        color: "white",
+        background: "#102c2c",
+        minHeight: "100vh",
+      }}
+    >
       <h1>Capital360IPO Database Test</h1>
       <p>{status}</p>
     </main>

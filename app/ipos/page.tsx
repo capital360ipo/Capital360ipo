@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { createClient } from "@supabase/supabase-js";
+import { supabase } from "@/lib/supabase";
 
 type IPO = {
   id: string;
@@ -15,11 +15,6 @@ type IPO = {
   status: string | null;
   created_at: string | null;
 };
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 function formatDate(date: string | null) {
   if (!date) return "Not announced";
@@ -46,9 +41,12 @@ export default function IPOListPage() {
           .order("created_at", { ascending: false });
 
         if (error) throw error;
+
         setIpos((data || []) as IPO[]);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unable to load IPOs.");
+        setError(
+          err instanceof Error ? err.message : "Unable to load IPOs."
+        );
       } finally {
         setLoading(false);
       }
@@ -58,16 +56,22 @@ export default function IPOListPage() {
   }, []);
 
   const filteredIPOs = ipos.filter((ipo) =>
-    (ipo.company_name || "").toLowerCase().includes(search.toLowerCase())
+    (ipo.company_name || "")
+      .toLowerCase()
+      .includes(search.toLowerCase())
   );
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
       <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4">
-          <Link href="/" className="text-2xl font-black tracking-tight text-slate-900">
+          <Link
+            href="/"
+            className="text-2xl font-black tracking-tight text-slate-900"
+          >
             Capital<span className="text-teal-600">360</span>IPO
           </Link>
+
           <Link
             href="/"
             className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-teal-700"
@@ -98,6 +102,7 @@ export default function IPOListPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search IPO by company name..."
+              aria-label="Search IPO by company name"
               className="w-full rounded-xl border border-white/20 bg-white px-5 py-4 text-slate-900 shadow-lg outline-none placeholder:text-slate-400 focus:border-teal-400 focus:ring-4 focus:ring-teal-400/20"
             />
           </div>
@@ -105,7 +110,9 @@ export default function IPOListPage() {
 
         <div className="mt-10 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-2xl font-black text-slate-900">All IPOs</h2>
+            <h2 className="text-2xl font-black text-slate-900">
+              All IPOs
+            </h2>
             <p className="mt-1 text-sm text-slate-500">
               Explore available IPO information
             </p>
@@ -132,7 +139,9 @@ export default function IPOListPage() {
 
         {!loading && !error && filteredIPOs.length === 0 && (
           <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-12 text-center shadow-sm">
-            <h3 className="text-lg font-bold text-slate-800">No IPO found</h3>
+            <h3 className="text-lg font-bold text-slate-800">
+              No IPO found
+            </h3>
             <p className="mt-2 text-sm text-slate-500">
               Try searching with another company name.
             </p>

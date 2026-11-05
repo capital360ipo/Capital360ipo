@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { createClient } from "@supabase/supabase-js";
+import { supabase } from "@/lib/supabase";
 
 type IPO = {
   id: string;
@@ -16,11 +16,6 @@ type IPO = {
   status: string | null;
   created_at: string | null;
 };
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 function formatDate(date: string | null) {
   if (!date) return "अभी उपलब्ध नहीं";
@@ -43,7 +38,9 @@ export default function IPOPage() {
   useEffect(() => {
     async function fetchIPO() {
       try {
-        if (!id) throw new Error("IPO ID URL में नहीं मिली।");
+        if (!id) {
+          throw new Error("IPO ID URL में नहीं मिली।");
+        }
 
         const { data, error } = await supabase
           .from("ipo_master")
@@ -52,12 +49,17 @@ export default function IPOPage() {
           .maybeSingle();
 
         if (error) throw error;
-        if (!data) throw new Error("इस ID से IPO रिकॉर्ड नहीं मिला।");
+
+        if (!data) {
+          throw new Error("इस ID से IPO रिकॉर्ड नहीं मिला।");
+        }
 
         setIpo(data as IPO);
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : "IPO जानकारी लोड नहीं हो पाई।"
+          err instanceof Error
+            ? err.message
+            : "IPO जानकारी लोड नहीं हो पाई।"
         );
       } finally {
         setLoading(false);
@@ -78,8 +80,12 @@ export default function IPOPage() {
   if (error || !ipo) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-5 text-center text-slate-900">
-        <h1 className="text-3xl font-bold">IPO Details Not Available</h1>
+        <h1 className="text-3xl font-bold">
+          IPO Details Not Available
+        </h1>
+
         <p className="mt-3 text-slate-500">{error}</p>
+
         <Link
           href="/ipos"
           className="mt-6 rounded-xl bg-slate-900 px-6 py-3 font-bold text-white hover:bg-teal-700"
@@ -108,6 +114,7 @@ export default function IPOPage() {
           <Link href="/" className="text-2xl font-black text-slate-900">
             Capital<span className="text-teal-600">360</span>IPO
           </Link>
+
           <Link
             href="/ipos"
             className="text-sm font-semibold text-slate-600 hover:text-teal-700"
@@ -149,7 +156,10 @@ export default function IPOPage() {
                 key={label}
                 className="rounded-2xl border border-slate-200 bg-slate-50 p-5"
               >
-                <p className="text-sm font-medium text-slate-500">{label}</p>
+                <p className="text-sm font-medium text-slate-500">
+                  {label}
+                </p>
+
                 <p className="mt-2 break-words text-lg font-extrabold text-teal-700">
                   {value}
                 </p>
@@ -162,9 +172,11 @@ export default function IPOPage() {
           <p className="text-sm font-bold uppercase tracking-widest text-teal-700">
             IPO Overview
           </p>
+
           <h2 className="mt-2 text-2xl font-black text-slate-900">
             About This IPO
           </h2>
+
           <p className="mt-4 leading-7 text-slate-600">
             {ipo.company_name} IPO की उपलब्ध जानकारी और महत्वपूर्ण तारीखें
             यहाँ दिखाई गई हैं। अतिरिक्त सत्यापित जानकारी डेटाबेस में जोड़ी जाएगी।
@@ -175,6 +187,7 @@ export default function IPOPage() {
           <p className="text-sm font-bold uppercase tracking-widest text-teal-700">
             Explore More
           </p>
+
           <h2 className="mt-2 text-2xl font-black text-slate-900">
             More IPO Information
           </h2>
@@ -185,7 +198,10 @@ export default function IPOPage() {
                 key={section}
                 className="rounded-xl border border-slate-200 bg-slate-50 p-5 transition hover:border-teal-300 hover:bg-teal-50/50"
               >
-                <h3 className="font-bold text-slate-800">{section}</h3>
+                <h3 className="font-bold text-slate-800">
+                  {section}
+                </h3>
+
                 <p className="mt-2 text-sm leading-6 text-slate-500">
                   Verified information will be displayed here after database integration.
                 </p>

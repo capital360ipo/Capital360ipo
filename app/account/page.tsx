@@ -1,103 +1,58 @@
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { supabase } from "@/lib/supabase";
+import { redirect } from "next/navigation";
+import { createSupabaseServerClient } from "@/lib/supabase-server";
 
 type AccountRole = "owner" | "admin" | "editor" | "viewer" | "customer";
 
-export default function AccountPage() {
-  const router = useRouter();
+async function handleLogout() {
+  "use server";
 
-  const [loading, setLoading] = useState(true);
-  const [signingOut, setSigningOut] = useState(false);
-  const [email, setEmail] = useState("");
-  const [fullName, setFullName] = useState("");
-  const [role, setRole] = useState<AccountRole | null>(null);
-  const [message, setMessage] = useState("");
+  const supabase = await createSupabaseServerClient();
+  await supabase.auth.signOut();
 
-  useEffect(() => {
-    let active = true;
+  redirect("/login");
+}
 
-    async function loadAccount() {
-      const { data: userData, error: userError } =
-        await supabase.auth.getUser();
+export default async function AccountPage() {
+  const supabase = await createSupabaseServerClient();
 
-      if (!active) return;
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
 
-      if (userError || !userData.user) {
-        router.replace("/login");
-        return;
-      }
-
-      setEmail(userData.user.email || "");
-
-      const [staffResult, customerResult] = await Promise.all([
-        supabase
-          .from("profiles")
-          .select("full_name, role")
-          .eq("id", userData.user.id)
-          .maybeSingle(),
-
-        supabase
-          .from("customer_profiles")
-          .select("full_name")
-          .eq("id", userData.user.id)
-          .maybeSingle(),
-      ]);
-
-      if (!active) return;
-
-      if (staffResult.error || customerResult.error) {
-        setMessage("Account details load nahi ho paye. Dobara try karein.");
-        setLoading(false);
-        return;
-      }
-
-      if (staffResult.data) {
-        const staffRole = staffResult.data.role as AccountRole;
-
-        setRole(staffRole);
-        setFullName(staffResult.data.full_name || "");
-      } else if (customerResult.data) {
-        setRole("customer");
-        setFullName(customerResult.data.full_name || "");
-      } else {
-        setMessage("Account profile abhi available nahi hai.");
-      }
-
-      setLoading(false);
-    }
-
-    loadAccount();
-
-    return () => {
-      active = false;
-    };
-  }, [router]);
-
-  async function handleLogout() {
-    setSigningOut(true);
-
-    const { error } = await supabase.auth.signOut();
-
-    if (error) {
-      setMessage("Logout nahi ho paya. Dobara try karein.");
-      setSigningOut(false);
-      return;
-    }
-
-    router.replace("/login");
-    router.refresh();
+  if (userError || !user) {
+    redirect("/login");
   }
 
-  if (loading) {
-    return (
-      <main className="min-h-screen flex items-center justify-center bg-slate-950 text-white">
-        Loading your account...
-      </main>
-    );
+  const [staffResult, customerResult] = await Promise.all([
+    supabase
+      .from("profiles")
+      .select("full_name, role")
+      .eq("id", user.id)
+      .maybeSingle(),
+
+    supabase
+      .from("customer_profiles")
+      .select("full_name")
+      .eq("id", user.id)
+      .maybeSingle(),
+  ]);
+
+  let role: AccountRole | null = null;
+  let fullName = "";
+  let message = "";
+
+  if (staffResult.error || customerResult.error) {
+    message = "Account details load nahi ho paye.";
+  } else if (staffResult.data) {
+    role = staffResult.data.role as AccountRole;
+    fullName = staffResult.data.full_name || "";
+  } else if (customerResult.data) {
+    role = "customer";
+    fullName = customerResult.data.full_name || "";
+  } else {
+    message = "Account profile abhi available nahi hai.";
   }
 
   const roleNames: Record<AccountRole, string> = {
@@ -117,13 +72,14 @@ export default function AccountPage() {
             CAPITAL<span className="text-emerald-400">360</span>IPO
           </Link>
 
-          <button
-            onClick={handleLogout}
-            disabled={signingOut}
-            className="rounded-lg border border-red-500/50 px-4 py-2 text-sm text-red-300 disabled:opacity-50"
-          >
-            {signingOut ? "Logging out..." : "Logout"}
-          </button>
+          <form action={handleLogout}>
+            <button
+              type="submit"
+              className="rounded-lg border border-red-500/50 px-4 py-2 text-sm text-red-300"
+            >
+              Logout
+            </button>
+          </form>
         </header>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
@@ -149,14 +105,12 @@ export default function AccountPage() {
 
             <div>
               <p className="text-xs text-slate-500">FULL NAME</p>
-              <p className="mt-1 text-lg">
-                {fullName || "Not added"}
-              </p>
+              <p className="mt-1 text-lg">{fullName || "Not added"}</p>
             </div>
 
             <div>
               <p className="text-xs text-slate-500">EMAIL ADDRESS</p>
-              <p className="mt-1 break-all text-lg">{email}</p>
+              <p className="mt-1 break-all text-lg">{user.email || ""}</p>
             </div>
 
             {message && (

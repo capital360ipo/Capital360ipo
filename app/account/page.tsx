@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
@@ -6,9 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 
-type CustomerProfile = {
-  full_name: string | null;
-};
+type AccountRole = "owner" | "admin" | "editor" | "viewer" | "customer";
 
 export default function AccountPage() {
   const router = useRouter();
@@ -17,6 +14,7 @@ export default function AccountPage() {
   const [signingOut, setSigningOut] = useState(false);
   const [email, setEmail] = useState("");
   const [fullName, setFullName] = useState("");
+  const [role, setRole] = useState<AccountRole | null>(null);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -35,20 +33,38 @@ export default function AccountPage() {
 
       setEmail(userData.user.email || "");
 
-      const { data: profile, error: profileError } = await supabase
-        .from("customer_profiles")
-        .select("full_name")
-        .eq("id", userData.user.id)
-        .maybeSingle();
+      const [staffResult, customerResult] = await Promise.all([
+        supabase
+          .from("profiles")
+          .select("full_name, role")
+          .eq("id", userData.user.id)
+          .maybeSingle(),
+
+        supabase
+          .from("customer_profiles")
+          .select("full_name")
+          .eq("id", userData.user.id)
+          .maybeSingle(),
+      ]);
 
       if (!active) return;
 
-      if (profileError) {
-        setMessage("Profile load nahi ho payi. Dobara try karein.");
-      } else if (profile) {
-        setFullName(profile.full_name || "");
+      if (staffResult.error || customerResult.error) {
+        setMessage("Account details load nahi ho paye. Dobara try karein.");
+        setLoading(false);
+        return;
+      }
+
+      if (staffResult.data) {
+        const staffRole = staffResult.data.role as AccountRole;
+
+        setRole(staffRole);
+        setFullName(staffResult.data.full_name || "");
+      } else if (customerResult.data) {
+        setRole("customer");
+        setFullName(customerResult.data.full_name || "");
       } else {
-        setMessage("Customer profile abhi available nahi hai.");
+        setMessage("Account profile abhi available nahi hai.");
       }
 
       setLoading(false);
@@ -63,6 +79,7 @@ export default function AccountPage() {
 
   async function handleLogout() {
     setSigningOut(true);
+
     const { error } = await supabase.auth.signOut();
 
     if (error) {
@@ -83,6 +100,14 @@ export default function AccountPage() {
     );
   }
 
+  const roleNames: Record<AccountRole, string> = {
+    owner: "Owner",
+    admin: "Administrator",
+    editor: "Editor",
+    viewer: "Viewer",
+    customer: "Customer",
+  };
+
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-10 text-white">
       <div className="mx-auto max-w-3xl">
@@ -102,12 +127,12 @@ export default function AccountPage() {
         </header>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
-          <p className="text-sm text-emerald-400">
-            CUSTOMER ACCOUNT
+          <p className="text-sm font-semibold text-emerald-400">
+            {role ? roleNames[role].toUpperCase() + " ACCOUNT" : "ACCOUNT"}
           </p>
 
           <h1 className="mt-2 text-3xl font-bold">
-            Welcome, {fullName || "Customer"}!
+            Welcome, {fullName || (role ? roleNames[role] : "User")}!
           </h1>
 
           <p className="mt-2 text-sm text-slate-400">
@@ -115,6 +140,13 @@ export default function AccountPage() {
           </p>
 
           <div className="mt-8 space-y-5">
+            <div>
+              <p className="text-xs text-slate-500">ACCOUNT ROLE</p>
+              <p className="mt-1 text-lg font-semibold capitalize">
+                {role || "Not available"}
+              </p>
+            </div>
+
             <div>
               <p className="text-xs text-slate-500">FULL NAME</p>
               <p className="mt-1 text-lg">

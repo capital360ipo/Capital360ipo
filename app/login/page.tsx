@@ -60,14 +60,14 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-slate-950 px-4 py-10">
-      <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-7 shadow-2xl">
+    <main className="min-h-screen flex items-center justify-center bg-slate-100 px-4 py-10">
+      <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-7 shadow-xl">
 
         <div className="mb-8 text-center">
-          <h1 className="text-3xl font-bold text-white">
-            CAPITAL<span className="text-emerald-400">360</span>IPO
+          <h1 className="text-3xl font-bold text-slate-900">
+            CAPITAL<span className="text-emerald-600">360</span>IPO
           </h1>
-          <p className="mt-3 text-sm text-slate-400">
+          <p className="mt-3 text-sm text-slate-600">
             Welcome back! Login to your account.
           </p>
         </div>
@@ -75,7 +75,7 @@ export default function LoginPage() {
         <form onSubmit={handleLogin} className="space-y-5">
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300">
+            <label className="mb-2 block text-sm font-semibold text-slate-800">
               Email Address
             </label>
             <input
@@ -84,29 +84,31 @@ export default function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="Enter your email"
-              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-white outline-none focus:border-emerald-400"
+              autoComplete="email"
+              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-base text-slate-900 placeholder:text-slate-400 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
             />
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300">
+            <label className="mb-2 block text-sm font-semibold text-slate-800">
               Password
             </label>
 
-            <div className="flex rounded-lg border border-slate-700 bg-slate-800 focus-within:border-emerald-400">
+            <div className="flex rounded-lg border border-slate-300 bg-white focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-100">
               <input
                 type={showPassword ? "text" : "password"}
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Enter your password"
-                className="min-w-0 flex-1 bg-transparent px-4 py-3 text-white outline-none"
+                autoComplete="current-password"
+                className="min-w-0 flex-1 rounded-lg bg-transparent px-4 py-3 text-base text-slate-900 placeholder:text-slate-400 outline-none"
               />
 
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="px-3 text-sm text-emerald-400"
+                className="px-4 text-sm font-semibold text-emerald-700"
               >
                 {showPassword ? "Hide" : "Show"}
               </button>
@@ -118,14 +120,14 @@ export default function LoginPage() {
               type="button"
               onClick={handleForgotPassword}
               disabled={loading}
-              className="text-sm text-emerald-400 hover:underline"
+              className="text-sm font-semibold text-emerald-700 hover:underline"
             >
               Forgot Password?
             </button>
           </div>
 
           {message && (
-            <p className="rounded-lg bg-slate-800 p-3 text-sm text-amber-300">
+            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 break-words">
               {message}
             </p>
           )}
@@ -133,7 +135,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-lg bg-emerald-500 py-3 font-bold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-50"
+            className="w-full rounded-lg bg-emerald-600 py-3 font-bold text-white transition hover:bg-emerald-700 disabled:opacity-50"
           >
             {loading ? "Please wait..." : "Login"}
           </button>
@@ -146,7 +148,7 @@ export default function LoginPage() {
 
         <a
           href="/"
-          className="mt-5 block text-center text-sm text-slate-400 hover:text-white"
+          className="mt-5 block text-center text-sm font-medium text-slate-600 hover:text-emerald-700"
         >
           ← Back to Home
         </a>

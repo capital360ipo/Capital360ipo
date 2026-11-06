@@ -19,19 +19,33 @@ export default function LoginPage() {
     setLoading(true);
     setMessage("");
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: email.trim(),
+          password,
+        }),
+      });
 
-    if (error) {
-      setMessage(error.message);
+      const result = await response.json();
+
+      if (!response.ok) {
+        setMessage(result.error || "Login failed.");
+        setLoading(false);
+        return;
+      }
+
+      router.replace("/account");
+      router.refresh();
+    } catch {
+      setMessage("Network error. Please try again.");
       setLoading(false);
-      return;
     }
-
-    router.push("/ipos");
-    router.refresh();
   }
 
   async function handleForgotPassword() {
@@ -73,7 +87,6 @@ export default function LoginPage() {
         </div>
 
         <form onSubmit={handleLogin} className="space-y-5">
-
           <div>
             <label className="mb-2 block text-sm font-semibold text-slate-800">
               Email Address
@@ -139,7 +152,6 @@ export default function LoginPage() {
           >
             {loading ? "Please wait..." : "Login"}
           </button>
-
         </form>
 
         <p className="mt-7 text-center text-xs text-slate-500">
@@ -152,7 +164,6 @@ export default function LoginPage() {
         >
           ← Back to Home
         </a>
-
       </div>
     </main>
   );

@@ -21,8 +21,28 @@ export default async function AccountPage() {
     error: userError,
   } = await supabase.auth.getUser();
 
+  // Temporary session diagnostic.
   if (userError || !user) {
-    redirect("/login");
+    return (
+      <main className="min-h-screen bg-slate-950 p-6 text-white">
+        <h1 className="text-2xl font-bold">Session Check</h1>
+
+        <p className="mt-4">
+          User: {user ? "Found" : "Not Found"}
+        </p>
+
+        <p className="mt-2 break-words">
+          Error: {userError?.message || "No authenticated user session found."}
+        </p>
+
+        <Link
+          href="/login"
+          className="mt-6 inline-block text-emerald-400 underline"
+        >
+          Back to Login
+        </Link>
+      </main>
+    );
   }
 
   const [staffResult, customerResult] = await Promise.all([
@@ -66,7 +86,6 @@ export default async function AccountPage() {
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-10 text-white">
       <div className="mx-auto max-w-3xl">
-
         <header className="mb-8 flex items-center justify-between gap-4">
           <Link href="/" className="text-xl font-bold">
             CAPITAL<span className="text-emerald-400">360</span>IPO
@@ -142,7 +161,6 @@ export default async function AccountPage() {
             </p>
           </Link>
         </section>
-
       </div>
     </main>
   );

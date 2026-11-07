@@ -1,4 +1,3 @@
-
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -9,9 +8,27 @@ const allowedRoles = ["admin", "editor", "viewer"] as const;
 
 export async function POST(request: NextRequest) {
   try {
-    // Verify logged-in user
+    // 1. Same-origin protection
+    const origin = request.headers.get("origin");
+
+    if (!origin || origin !== request.nextUrl.origin) {
+      return NextResponse.json(
+        { error: "Invalid request origin." },
+        { status: 403 }
+      );
+    }
+
+    // 2. JSON content validation
+    if (!request.headers.get("content-type")?.includes("application/json")) {
+      return NextResponse.json(
+        { error: "JSON request required." },
+        { status: 415 }
+      );
+    }
+
     const supabase = await createSupabaseServerClient();
 
+    // 3. Verify authenticated user
     const {
       data: { user },
       error: authError,
@@ -24,7 +41,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify actual Owner role from database
+    // 4. Verify actual Owner role from database
     const { data: ownerProfile, error: ownerError } = await supabase
       .from("profiles")
       .select("role")
@@ -38,17 +55,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = await request.json();
+    // 5. Validate request body
+    const body: unknown = await request.json();
+
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json(
+        { error: "Invalid request body." },
+        { status: 400 }
+      );
+    }
+
+    const payload = body as Record<string, unknown>;
 
     const email =
-      typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+      typeof payload.email === "string"
+        ? payload.email.trim().toLowerCase()
+        : "";
 
     const fullName =
-      typeof body.full_name === "string" ? body.full_name.trim() : "";
+      typeof payload.full_name === "string"
+        ? payload.full_name.trim()
+        : "";
 
-    const role = body.role;
+    const role = payload.role;
 
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!email || email.length > 254 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return NextResponse.json(
         { error: "Valid email address required." },
         { status: 400 }
@@ -62,14 +94,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!allowedRoles.includes(role)) {
+    if (
+      typeof role !== "string" ||
+      !allowedRoles.some((allowedRole) => allowedRole === role)
+    ) {
       return NextResponse.json(
-        { error: "Invalid staff role. Owner assignment is not allowed here." },
+        { error: "Invalid role. Owner assignment is not allowed." },
         { status: 400 }
       );
     }
 
-    // Send staff invitation
+    // 6. Invite staff through trusted server-side Supabase client
     const { data: inviteData, error: inviteError } =
       await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
         data: {
@@ -86,7 +121,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create the staff profile
+    // 7. Create staff profile
     const { error: profileError } = await supabaseAdmin
       .from("profiles")
       .insert({
@@ -96,7 +131,6 @@ export async function POST(request: NextRequest) {
       });
 
     if (profileError) {
-      // Roll back the invited Auth user if profile creation fails
       await supabaseAdmin.auth.admin.deleteUser(inviteData.user.id);
 
       return NextResponse.json(
@@ -111,7 +145,10 @@ export async function POST(request: NextRequest) {
         message: "Staff invitation sent successfully.",
         role,
       },
-      { status: 201 }
+      {
+        status: 201,
+        headers: { "Cache-Control": "no-store" },
+      }
     );
   } catch {
     return NextResponse.json(

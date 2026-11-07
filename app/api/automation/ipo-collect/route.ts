@@ -1,3 +1,4 @@
+
 import "server-only";
 
 import { createHash } from "crypto";
@@ -9,7 +10,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const SEBI_URL =
-  "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListing=yes&sid=3&ssid=15";
+  "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListing=yes&sid=3&smid=10&ssid=15";
 
 function cleanText(value: string): string {
   return value
@@ -25,18 +26,22 @@ function cleanText(value: string): string {
 }
 
 function parseDate(value: string): string | null {
-  const date = new Date(value);
+  const match = value.match(
+    /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b/i
+  );
 
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
+  if (!match) return null;
+
+  const date = new Date(match[0]);
+
+  if (Number.isNaN(date.getTime())) return null;
 
   return date.toISOString().slice(0, 10);
 }
 
 export async function POST() {
   try {
-    // Authenticate the current user.
+    // Authenticate user.
     const supabase = await createSupabaseServerClient();
 
     const {
@@ -51,7 +56,7 @@ export async function POST() {
       );
     }
 
-    // Verify Owner/Admin role.
+    // Only Owner/Admin can run collection.
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("role")
@@ -69,22 +74,29 @@ export async function POST() {
       );
     }
 
-    // Fetch official SEBI public issue filings.
+    // Fetch SEBI Draft Offer Documents.
     const response = await fetch(SEBI_URL, {
       method: "GET",
       cache: "no-store",
       signal: AbortSignal.timeout(20000),
       headers: {
-        "User-Agent": "Capital360IPO/1.0",
+        "User-Agent": "Mozilla/5.0 Capital360IPO/1.0",
         Accept: "text/html",
       },
     });
 
     if (!response.ok) {
-      throw new Error(`SEBI source returned ${response.status}`);
+      throw new Error(`SEBI source returned HTTP ${response.status}`);
     }
 
     const html = await response.text();
+
+    if (
+      !html ||
+      !/<html|<table|<tr/i.test(html)
+    ) {
+      throw new Error("SEBI returned an unexpected page format.");
+    }
 
     const rows = html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
 
@@ -93,20 +105,14 @@ export async function POST() {
     let duplicates = 0;
 
     for (const row of rows) {
-      const cells = [
-        ...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi),
-      ];
-
-      if (cells.length < 2) continue;
-
-      const filingDate = parseDate(cleanText(cells[0][1]));
+      const rowText = cleanText(row);
+      const filingDate = parseDate(rowText);
 
       if (!filingDate) continue;
 
-      const titleCell = cells[1][1];
-
+      // Read links from the complete row, not only one table cell.
       const links = [
-        ...titleCell.matchAll(
+        ...row.matchAll(
           /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
         ),
       ];
@@ -114,7 +120,12 @@ export async function POST() {
       for (const link of links) {
         const title = cleanText(link[2]);
 
-        if (!/DRHP|Draft Red Herring/i.test(title)) {
+        if (!/\bDRHP\b|Draft Red Herring/i.test(title)) {
+          continue;
+        }
+
+        // Addendums and corrigenda are not new DRHP filings.
+        if (/addendum|corrigendum/i.test(title)) {
           continue;
         }
 
@@ -129,7 +140,11 @@ export async function POST() {
 
         const sourceUrl = new URL(link[1], SEBI_URL);
 
-        if (sourceUrl.hostname !== "www.sebi.gov.in") {
+        if (
+          !["www.sebi.gov.in", "sebi.gov.in"].includes(
+            sourceUrl.hostname
+          )
+        ) {
           continue;
         }
 
@@ -167,15 +182,23 @@ export async function POST() {
         }
 
         if (error) {
-          throw new Error(error.message);
+          throw new Error(
+            `IPO queue insert failed: ${error.message}`
+          );
         }
 
         inserted++;
       }
     }
 
-    // Save successful automation log.
-    const { error: successLogError } = await supabaseAdmin
+    // Never report success if no DRHP records were parsed.
+    if (detected === 0) {
+      throw new Error(
+        "No DRHP records could be parsed from the SEBI page. Source parsing needs verification."
+      );
+    }
+
+    const { error: logError } = await supabaseAdmin
       .from("automation_logs")
       .insert({
         task_name: "SEBI IPO DRHP Collection",
@@ -183,8 +206,8 @@ export async function POST() {
         message: `Detected: ${detected}, Inserted: ${inserted}, Duplicates: ${duplicates}`,
       });
 
-    if (successLogError) {
-      console.error("Automation success log failed:", successLogError.message);
+    if (logError) {
+      console.error("Success log failed:", logError.message);
     }
 
     return NextResponse.json(
@@ -208,28 +231,31 @@ export async function POST() {
         ? error.message
         : "Unknown collection error";
 
-    // Best-effort failure logging.
+    console.error("IPO collection failed:", message);
+
     try {
-      const { error: logError } = await supabaseAdmin
+      await supabaseAdmin
         .from("automation_logs")
         .insert({
           task_name: "SEBI IPO DRHP Collection",
           status: "failed",
           message: message.slice(0, 500),
         });
-
-      if (logError) {
-        console.error("Automation failure log failed:", logError.message);
-      }
     } catch (loggingError) {
-      console.error("Automation logging exception:", loggingError);
+      console.error("Failure logging error:", loggingError);
     }
 
-    console.error("IPO collection failed:", message);
-
     return NextResponse.json(
-      { error: "IPO collection failed. Check server logs." },
-      { status: 500 }
+      {
+        success: false,
+        error: "IPO collection failed. Check server logs.",
+      },
+      {
+        status: 502,
+        headers: {
+          "Cache-Control": "no-store",
+        },
+      }
     );
   }
 }

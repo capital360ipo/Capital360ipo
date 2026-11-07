@@ -49,13 +49,21 @@ function parseDate(value: string): string | null {
   return null;
 }
 
+// Improved company-name extraction for SEBI filing titles.
 function extractCompanyName(title: string): string {
-  return title
-    .replace(/\s*[-–—:]\s*Draft Red Herring.*$/i, "")
-    .replace(/\s*[-–—:]\s*UDRHP(?:[-\s]*I{1,2})?.*$/i, "")
-    .replace(/\s*[-–—:]\s*DRHP.*$/i, "")
-    .replace(/\s*[-–—:]\s*Addendum.*$/i, "")
-    .replace(/\s*[-–—:]\s*Corrigendum.*$/i, "")
+  return cleanText(title)
+    .replace(
+      /\s*[-–—:]\s*(?:draft\s+)?(?:abridged\s+)?(?:red\s+herring\s+)?prospectus\b[\s\S]*$/i,
+      ""
+    )
+    .replace(
+      /\s*[\[(]?\s*(?:U?DRHP|RHP)(?:[-\s]*I{1,3})?\s*[\])]?(?:\s*advertisement)?[\s\S]*$/i,
+      ""
+    )
+    .replace(
+      /\s*[-–—:]\s*(?:addendum|corrigendum).*$/i,
+      ""
+    )
     .trim();
 }
 

@@ -13,11 +13,22 @@ type IPO = {
   listing_date: string | null;
   status: string | null;
   ipo_type: string | null;
+  drhp_filed_date: string | null;
 };
 
-type Filter = "All" | "Upcoming" | "Open" | "Past" | "Mainboard" | "SME";
+type StatusFilter = "All" | "Upcoming" | "Open" | "Past";
+type TypeFilter = "All Types" | "Mainboard" | "SME";
 
 const TEST_IPO_ID = "1ea4a898-8628-4d30-b117-e5f8d198bea9";
+
+function todayDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
 
 function formatDate(date: string | null) {
   if (!date) return "Not announced";
@@ -30,13 +41,15 @@ function formatDate(date: string | null) {
 }
 
 function getCategory(ipo: IPO): "Upcoming" | "Open" | "Past" | "Other" {
-  const status = (ipo.status || "").toLowerCase();
+  const status = (ipo.status || "").toLowerCase().trim();
 
-  if (["postponed", "withdrawn", "cancelled", "canceled"].includes(status)) {
+  if (
+    ["postponed", "withdrawn", "cancelled", "canceled"].includes(status)
+  ) {
     return "Other";
   }
 
-  const today = new Date().toLocaleDateString("en-CA");
+  const today = todayDate();
 
   if (ipo.open_date && ipo.open_date > today) return "Upcoming";
 
@@ -54,12 +67,118 @@ function getCategory(ipo: IPO): "Upcoming" | "Open" | "Past" | "Other" {
   return "Other";
 }
 
+function isDrhpPipeline(ipo: IPO) {
+  const category = getCategory(ipo);
+  const status = (ipo.status || "").toLowerCase().trim();
+
+  return (
+    Boolean(ipo.drhp_filed_date) &&
+    category !== "Open" &&
+    category !== "Past" &&
+    category !== "Other" &&
+    !["withdrawn", "cancelled", "canceled"].includes(status)
+  );
+}
+
+function filterByType(ipo: IPO, type: TypeFilter) {
+  if (type === "All Types") return true;
+
+  return (ipo.ipo_type || "").toLowerCase() === type.toLowerCase();
+}
+
+function IPOCard({
+  ipo,
+  pipeline = false,
+}: {
+  ipo: IPO;
+  pipeline?: boolean;
+}) {
+  const category = getCategory(ipo);
+  const type = ipo.ipo_type?.toUpperCase() || "IPO";
+
+  return (
+    <article className="group rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition duration-300 hover:-translate-y-1 hover:border-teal-300 hover:shadow-xl sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-extrabold text-slate-900 sm:text-xl">
+            {ipo.company_name?.trim() || "IPO"}
+          </h3>
+          <p className="mt-1 text-xs font-semibold tracking-wide text-slate-400">
+            {type}
+          </p>
+        </div>
+
+        <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-teal-700 ring-1 ring-teal-100">
+          {pipeline ? "DRHP Filed" : category === "Other" ? ipo.status || "IPO" : category}
+        </span>
+      </div>
+
+      {pipeline ? (
+        <div className="my-6 rounded-xl border border-blue-100 bg-blue-50 p-4">
+          <p className="text-sm font-bold text-blue-900">
+            IPO in preparation
+          </p>
+          <p className="mt-1 text-xs leading-5 text-blue-700">
+            DRHP filing recorded. IPO opening is not yet confirmed.
+          </p>
+        </div>
+      ) : (
+        <div className="my-6 grid grid-cols-2 gap-x-4 gap-y-6 border-y border-slate-100 py-6">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Price Band
+            </p>
+            <p className="mt-2 font-bold text-slate-800">
+              {ipo.price_band || "Not announced"}
+            </p>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Opening Date
+            </p>
+            <p className="mt-2 font-bold text-slate-800">
+              {formatDate(ipo.open_date)}
+            </p>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Closing Date
+            </p>
+            <p className="mt-2 font-bold text-slate-800">
+              {formatDate(ipo.close_date)}
+            </p>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Listing Date
+            </p>
+            <p className="mt-2 font-bold text-slate-800">
+              {formatDate(ipo.listing_date)}
+            </p>
+          </div>
+        </div>
+      )}
+
+      <Link
+        href={`/ipos/${encodeURIComponent(ipo.id)}`}
+        className="flex w-full items-center justify-center rounded-xl bg-slate-900 px-5 py-3.5 font-bold text-white transition hover:bg-teal-700"
+      >
+        View Full IPO Details <span className="ml-2">→</span>
+      </Link>
+    </article>
+  );
+}
+
 export default function IPOListPage() {
   const [ipos, setIpos] = useState<IPO[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<Filter>("All");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("All");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("All Types");
 
   useEffect(() => {
     async function fetchIPOs() {
@@ -67,7 +186,7 @@ export default function IPOListPage() {
         const { data, error } = await supabase
           .from("ipo_master")
           .select(
-            "id, company_name, price_band, open_date, close_date, listing_date, status, ipo_type"
+            "id, company_name, price_band, open_date, close_date, listing_date, status, ipo_type, drhp_filed_date"
           )
           .order("open_date", { ascending: true, nullsFirst: false });
 
@@ -75,7 +194,9 @@ export default function IPOListPage() {
 
         setIpos((data || []) as IPO[]);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unable to load IPOs.");
+        setError(
+          err instanceof Error ? err.message : "Unable to load IPOs."
+        );
       } finally {
         setLoading(false);
       }
@@ -84,34 +205,49 @@ export default function IPOListPage() {
     fetchIPOs();
   }, []);
 
-  const visibleIPOs = useMemo(() => {
-    return ipos
+  const filteredData = useMemo(() => {
+    const available = ipos
       .filter((ipo) => ipo.id !== TEST_IPO_ID)
       .filter((ipo) =>
         (ipo.company_name || "")
           .toLowerCase()
           .includes(search.trim().toLowerCase())
       )
-      .filter((ipo) => {
-        const category = getCategory(ipo);
-        const type = (ipo.ipo_type || "").toLowerCase();
+      .filter((ipo) => filterByType(ipo, typeFilter));
 
-        if (filter === "All") return true;
-        if (filter === "Upcoming") return category === "Upcoming";
-        if (filter === "Open") return category === "Open";
-        if (filter === "Past") return category === "Past";
-        if (filter === "Mainboard") return type === "mainboard";
-        if (filter === "SME") return type === "sme";
+    const pipeline = available.filter(isDrhpPipeline);
 
-        return true;
-      });
-  }, [ipos, search, filter]);
+    const regular = available.filter((ipo) => !isDrhpPipeline(ipo));
 
-  const filters: Filter[] = [
+    const main = regular.filter((ipo) => {
+      const category = getCategory(ipo);
+
+      if (statusFilter === "All") return true;
+      if (statusFilter === "Upcoming") return category === "Upcoming";
+      if (statusFilter === "Open") return category === "Open";
+      if (statusFilter === "Past") return category === "Past";
+
+      return false;
+    });
+
+    return {
+      main,
+      pipeline:
+        statusFilter === "All" || statusFilter === "Open"
+          ? pipeline
+          : [],
+    };
+  }, [ipos, search, statusFilter, typeFilter]);
+
+  const statusOptions: StatusFilter[] = [
     "All",
     "Upcoming",
     "Open",
     "Past",
+  ];
+
+  const typeOptions: TypeFilter[] = [
+    "All Types",
     "Mainboard",
     "SME",
   ];
@@ -126,7 +262,7 @@ export default function IPOListPage() {
 
           <Link
             href="/"
-            className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 hover:text-teal-700"
+            className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-teal-700"
           >
             ← Home
           </Link>
@@ -144,8 +280,8 @@ export default function IPOListPage() {
           </h1>
 
           <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-300 sm:text-base">
-            Explore upcoming, open and listed IPOs, important dates,
-            price bands and market information — all in one place.
+            Discover IPO opportunities, company filings, issue details
+            and important market information in one place.
           </p>
 
           <div className="mt-8 max-w-xl">
@@ -161,19 +297,18 @@ export default function IPOListPage() {
         </div>
 
         <div className="mt-10">
-          <h2 className="text-2xl font-black text-slate-900">Explore IPOs</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Find IPOs by status and market category
-          </p>
+          <h2 className="text-xl font-black text-slate-900">
+            IPO Status
+          </h2>
 
-          <div className="mt-5 flex gap-2 overflow-x-auto pb-3">
-            {filters.map((item) => (
+          <div className="mt-4 flex gap-2 overflow-x-auto pb-2">
+            {statusOptions.map((item) => (
               <button
                 key={item}
                 type="button"
-                onClick={() => setFilter(item)}
+                onClick={() => setStatusFilter(item)}
                 className={`shrink-0 rounded-full px-5 py-2.5 text-sm font-bold transition ${
-                  filter === item
+                  statusFilter === item
                     ? "bg-slate-900 text-white shadow-md"
                     : "border border-slate-200 bg-white text-slate-600 hover:border-teal-300 hover:text-teal-700"
                 }`}
@@ -184,18 +319,41 @@ export default function IPOListPage() {
           </div>
         </div>
 
-        <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+        <div className="mt-5">
+          <h2 className="text-xl font-black text-slate-900">
+            IPO Type
+          </h2>
+
+          <div className="mt-4 flex gap-2 overflow-x-auto pb-2">
+            {typeOptions.map((item) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setTypeFilter(item)}
+                className={`shrink-0 rounded-full px-5 py-2.5 text-sm font-bold transition ${
+                  typeFilter === item
+                    ? "bg-teal-700 text-white shadow-md"
+                    : "border border-slate-200 bg-white text-slate-600 hover:border-teal-300 hover:text-teal-700"
+                }`}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 className="text-xl font-extrabold text-slate-900">
-              {filter === "All" ? "All IPOs" : `${filter} IPOs`}
-            </h3>
+            <h2 className="text-2xl font-black text-slate-900">
+              {statusFilter === "All" ? "All IPOs" : `${statusFilter} IPOs`}
+            </h2>
             <p className="mt-1 text-sm text-slate-500">
-              IPO information from our database
+              Explore IPO information by status and category
             </p>
           </div>
 
           <span className="rounded-full border border-teal-100 bg-teal-50 px-4 py-2 text-sm font-bold text-teal-700">
-            {visibleIPOs.length} IPOs
+            {filteredData.main.length + filteredData.pipeline.length} Results
           </span>
         </div>
 
@@ -213,93 +371,54 @@ export default function IPOListPage() {
           </div>
         )}
 
-        {!loading && !error && visibleIPOs.length === 0 && (
-          <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-12 text-center shadow-sm">
-            <h3 className="text-lg font-bold text-slate-800">
-              No IPO found
-            </h3>
-            <p className="mt-2 text-sm text-slate-500">
-              Try another filter or company name.
-            </p>
-          </div>
-        )}
+        {!loading && !error && (
+          <>
+            {filteredData.main.length > 0 && (
+              <div className="mt-6 grid gap-6 md:grid-cols-2">
+                {filteredData.main.map((ipo) => (
+                  <IPOCard key={ipo.id} ipo={ipo} />
+                ))}
+              </div>
+            )}
 
-        {!loading && !error && visibleIPOs.length > 0 && (
-          <div className="mt-6 grid gap-6 md:grid-cols-2">
-            {visibleIPOs.map((ipo) => {
-              const category = getCategory(ipo);
-              const type = ipo.ipo_type?.toUpperCase() || "IPO";
-
-              return (
-                <article
-                  key={ipo.id}
-                  className="group rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition duration-300 hover:-translate-y-1 hover:border-teal-300 hover:shadow-xl"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-xl font-extrabold text-slate-900">
-                        {ipo.company_name?.trim() || "IPO"}
-                      </h3>
-                      <p className="mt-1 text-xs font-semibold tracking-wide text-slate-400">
-                        {type}
-                      </p>
-                    </div>
-
-                    <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-teal-700 ring-1 ring-teal-100">
-                      {category === "Other"
-                        ? ipo.status || "IPO"
-                        : category}
+            {filteredData.pipeline.length > 0 && (
+              <section className="mt-12">
+                <div className="mb-5 border-b border-slate-200 pb-4">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <h2 className="text-2xl font-black text-slate-900">
+                      DRHP Filed – Upcoming Pipeline
+                    </h2>
+                    <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
+                      {filteredData.pipeline.length} Companies
                     </span>
                   </div>
 
-                  <div className="my-6 grid grid-cols-2 gap-x-4 gap-y-6 border-y border-slate-100 py-6">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                        Price Band
-                      </p>
-                      <p className="mt-2 font-bold text-slate-800">
-                        {ipo.price_band || "Not announced"}
-                      </p>
-                    </div>
+                  <p className="mt-2 text-sm leading-6 text-slate-500">
+                    Companies with a recorded DRHP filing. IPO opening
+                    dates are not yet confirmed.
+                  </p>
+                </div>
 
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                        Opening Date
-                      </p>
-                      <p className="mt-2 font-bold text-slate-800">
-                        {formatDate(ipo.open_date)}
-                      </p>
-                    </div>
+                <div className="grid gap-6 md:grid-cols-2">
+                  {filteredData.pipeline.map((ipo) => (
+                    <IPOCard key={ipo.id} ipo={ipo} pipeline />
+                  ))}
+                </div>
+              </section>
+            )}
 
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                        Closing Date
-                      </p>
-                      <p className="mt-2 font-bold text-slate-800">
-                        {formatDate(ipo.close_date)}
-                      </p>
-                    </div>
-
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                        Listing Date
-                      </p>
-                      <p className="mt-2 font-bold text-slate-800">
-                        {formatDate(ipo.listing_date)}
-                      </p>
-                    </div>
-                  </div>
-
-                  <Link
-                    href={`/ipos/${encodeURIComponent(ipo.id)}`}
-                    className="flex w-full items-center justify-center rounded-xl bg-slate-900 px-5 py-3.5 font-bold text-white transition hover:bg-teal-700"
-                  >
-                    View Full IPO Details <span className="ml-2">→</span>
-                  </Link>
-                </article>
-              );
-            })}
-          </div>
+            {filteredData.main.length === 0 &&
+              filteredData.pipeline.length === 0 && (
+                <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-12 text-center shadow-sm">
+                  <h3 className="text-lg font-bold text-slate-800">
+                    No IPO found
+                  </h3>
+                  <p className="mt-2 text-sm text-slate-500">
+                    Try another status, IPO type or company name.
+                  </p>
+                </div>
+              )}
+          </>
         )}
 
         <footer className="mt-14 border-t border-slate-200 py-7 text-center text-xs leading-6 text-slate-500">

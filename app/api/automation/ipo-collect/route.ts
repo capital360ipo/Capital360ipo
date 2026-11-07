@@ -189,51 +189,129 @@ async function collectIpos() {
     let detected = 0;
     let inserted = 0;
     let duplicates = 0;
+    let evidenceInserted = 0;
+    let evidenceDuplicates = 0;
 
     for (const filing of filings.values()) {
       detected++;
 
-      const contentHash = createHash("sha256")
+      const queueHash = createHash("sha256")
         .update(`SEBI|${filing.sourceUrl}`)
         .digest("hex");
 
-      const { error } = await supabaseAdmin
-        .from("ipo_import_queue")
-        .insert({
-          source_name: "SEBI",
-          source_url: filing.sourceUrl,
-          external_id: filing.sourceUrl,
-          company_name: filing.companyName,
-          ipo_type: null,
-          drhp_filed_date: filing.filingDate,
-          detected_status: "drhp_filed",
-          raw_payload: {
-            title: filing.title,
-            filing_date: filing.filingDate,
+      let queueId: string;
+
+      const { data: newQueueRecord, error: queueError } =
+        await supabaseAdmin
+          .from("ipo_import_queue")
+          .insert({
+            source_name: "SEBI",
             source_url: filing.sourceUrl,
-            source: "SEBI",
-          },
-          content_hash: contentHash,
-          review_status: "pending",
-          collected_at: new Date().toISOString(),
-        });
+            external_id: filing.sourceUrl,
+            company_name: filing.companyName,
+            ipo_type: null,
+            drhp_filed_date: filing.filingDate,
+            detected_status: "drhp_filed",
+            raw_payload: {
+              title: filing.title,
+              filing_date: filing.filingDate,
+              source_url: filing.sourceUrl,
+              source: "SEBI",
+            },
+            content_hash: queueHash,
+            review_status: "pending",
+            collected_at: new Date().toISOString(),
+          })
+          .select("id")
+          .single();
 
-      if (error?.code === "23505") {
+      if (queueError?.code === "23505") {
         duplicates++;
-        continue;
-      }
 
-      if (error) {
+        const { data: existingRecord, error: lookupError } =
+          await supabaseAdmin
+            .from("ipo_import_queue")
+            .select("id")
+            .eq("source_name", "SEBI")
+            .eq("content_hash", queueHash)
+            .maybeSingle();
+
+        if (lookupError || !existingRecord) {
+          throw new Error(
+            "Could not find the existing SEBI queue record."
+          );
+        }
+
+        queueId = existingRecord.id;
+      } else if (queueError || !newQueueRecord) {
         throw new Error("IPO queue insert failed.");
+      } else {
+        inserted++;
+        queueId = newQueueRecord.id;
       }
 
-      inserted++;
+      // Store official listing evidence.
+      // This proves the filing was listed at the SEBI URL,
+      // not that every document detail has been independently verified.
+
+      const evidenceHash = createHash("sha256")
+        .update(
+          [
+            "SEBI",
+            "DRHP_FILING_LISTING",
+            filing.sourceUrl,
+            filing.filingDate,
+            filing.title,
+          ].join("|")
+        )
+        .digest("hex");
+
+      const { data: evidenceData, error: evidenceError } =
+        await supabaseAdmin
+          .from("ipo_source_evidence")
+          .upsert(
+            {
+              queue_id: queueId,
+              source_name: "SEBI",
+              source_url: filing.sourceUrl,
+              evidence_type: "drhp_filing_listing",
+              field_name: "drhp_filed_date",
+              field_value: filing.filingDate,
+              issuer_name: filing.companyName,
+              is_official_source: true,
+              validation_status: "unverified",
+              content_hash: evidenceHash,
+              observed_at: new Date().toISOString(),
+              metadata: {
+                title: filing.title,
+                listing_page: SEBI_URL,
+                evidence_scope:
+                  "SEBI listing entry detected; document contents not independently validated.",
+              },
+            },
+            {
+              onConflict: "queue_id,evidence_type,content_hash",
+              ignoreDuplicates: true,
+            }
+          )
+          .select("id");
+
+      if (evidenceError) {
+        throw new Error("SEBI source evidence could not be saved.");
+      }
+
+      if (evidenceData && evidenceData.length > 0) {
+        evidenceInserted += evidenceData.length;
+      } else {
+        evidenceDuplicates++;
+      }
     }
 
     const collectionMessage =
-      `Detected: ${detected}, Inserted: ${inserted}, Duplicates: ${duplicates}`;
+      `Detected: ${detected}, Inserted: ${inserted}, ` +
+      `Duplicates: ${duplicates}, Evidence inserted: ${evidenceInserted}, ` +
+      `Evidence duplicates: ${evidenceDuplicates}`;
 
-    // Automatically run matching after successful collection.
     let matchingResult = null;
     let matchingError: string | null = null;
 
@@ -270,9 +348,12 @@ async function collectIpos() {
         detected,
         inserted,
         duplicates,
+        evidenceInserted,
+        evidenceDuplicates,
         matching: matchingResult,
         matchingError,
         review_status: "pending",
+        evidence_status: "unverified",
         message: collectionMessage,
       },
       {

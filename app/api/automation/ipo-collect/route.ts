@@ -1,4 +1,3 @@
-
 import "server-only";
 
 import { createHash } from "crypto";
@@ -12,7 +11,7 @@ export const dynamic = "force-dynamic";
 const SEBI_URL =
   "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListing=yes&sid=3&ssid=15";
 
-function cleanText(value: string) {
+function cleanText(value: string): string {
   return value
     .replace(/<[^>]*>/g, " ")
     .replace(/&nbsp;/gi, " ")
@@ -37,27 +36,33 @@ function parseDate(value: string): string | null {
 
 export async function POST() {
   try {
-    // Only Owner/Admin can run this collector.
+    // Authenticate the current user.
     const supabase = await createSupabaseServerClient();
 
     const {
       data: { user },
+      error: authError,
     } = await supabase.auth.getUser();
 
-    if (!user) {
+    if (authError || !user) {
       return NextResponse.json(
         { error: "Authentication required." },
         { status: 401 }
       );
     }
 
-    const { data: profile } = await supabase
+    // Verify Owner/Admin role.
+    const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("role")
       .eq("id", user.id)
       .maybeSingle();
 
-    if (!profile || !["owner", "admin"].includes(profile.role)) {
+    if (
+      profileError ||
+      !profile ||
+      !["owner", "admin"].includes(profile.role)
+    ) {
       return NextResponse.json(
         { error: "Owner/Admin access required." },
         { status: 403 }
@@ -95,6 +100,7 @@ export async function POST() {
       if (cells.length < 2) continue;
 
       const filingDate = parseDate(cleanText(cells[0][1]));
+
       if (!filingDate) continue;
 
       const titleCell = cells[1][1];
@@ -117,7 +123,9 @@ export async function POST() {
           .replace(/[-–—:]?\s*Draft Red Herring.*$/i, "")
           .trim();
 
-        if (!companyName || companyName.length < 3) continue;
+        if (!companyName || companyName.length < 3) {
+          continue;
+        }
 
         const sourceUrl = new URL(link[1], SEBI_URL);
 
@@ -166,11 +174,18 @@ export async function POST() {
       }
     }
 
-    await supabaseAdmin.from("automation_logs").insert({
-      task_name: "SEBI IPO DRHP Collection",
-      status: "success",
-      message: `Detected: ${detected}, Inserted: ${inserted}, Duplicates: ${duplicates}`,
-    });
+    // Save successful automation log.
+    const { error: successLogError } = await supabaseAdmin
+      .from("automation_logs")
+      .insert({
+        task_name: "SEBI IPO DRHP Collection",
+        status: "success",
+        message: `Detected: ${detected}, Inserted: ${inserted}, Duplicates: ${duplicates}`,
+      });
+
+    if (successLogError) {
+      console.error("Automation success log failed:", successLogError.message);
+    }
 
     return NextResponse.json(
       {
@@ -189,20 +204,31 @@ export async function POST() {
     );
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Unknown collection error";
+      error instanceof Error
+        ? error.message
+        : "Unknown collection error";
 
-    await supabaseAdmin
-      .from("automation_logs")
-      .insert({
-        task_name: "SEBI IPO DRHP Collection",
-        status: "failed",
-        message: message.slice(0, 500),
-      })
-      .then(() => undefined)
-      .catch(() => undefined);
+    // Best-effort failure logging.
+    try {
+      const { error: logError } = await supabaseAdmin
+        .from("automation_logs")
+        .insert({
+          task_name: "SEBI IPO DRHP Collection",
+          status: "failed",
+          message: message.slice(0, 500),
+        });
+
+      if (logError) {
+        console.error("Automation failure log failed:", logError.message);
+      }
+    } catch (loggingError) {
+      console.error("Automation logging exception:", loggingError);
+    }
+
+    console.error("IPO collection failed:", message);
 
     return NextResponse.json(
-      { error: "IPO collection failed. Check automation logs." },
+      { error: "IPO collection failed. Check server logs." },
       { status: 500 }
     );
   }

@@ -1,8 +1,7 @@
-
 import "server-only";
 
 import { createHash } from "crypto";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
@@ -89,42 +88,8 @@ async function writeLog(
   }
 }
 
-export async function POST() {
+async function collectIpos() {
   try {
-    // 1. Verify login.
-    const supabase = await createSupabaseServerClient();
-
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: "Authentication required." },
-        { status: 401 }
-      );
-    }
-
-    // 2. Only Owner/Admin can run the collector.
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .maybeSingle();
-
-    if (
-      profileError ||
-      !profile ||
-      !["owner", "admin"].includes(profile.role)
-    ) {
-      return NextResponse.json(
-        { error: "Owner/Admin access required." },
-        { status: 403 }
-      );
-    }
-
-    // 3. Fetch official SEBI public issues page.
     const response = await fetch(SEBI_URL, {
       method: "GET",
       cache: "no-store",
@@ -137,9 +102,7 @@ export async function POST() {
     });
 
     if (!response.ok) {
-      throw new Error(
-        `SEBI returned HTTP ${response.status}`
-      );
+      throw new Error(`SEBI returned HTTP ${response.status}`);
     }
 
     const html = await response.text();
@@ -148,8 +111,6 @@ export async function POST() {
       throw new Error("SEBI returned an empty or incomplete page.");
     }
 
-    // 4. Parse SEBI listing rows.
-    // The listing contains a date and one or more title links per row.
     const rows =
       html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
 
@@ -178,15 +139,11 @@ export async function POST() {
       for (const link of links) {
         const title = cleanText(link[2]);
 
-        if (!isValidFilingTitle(title)) {
-          continue;
-        }
+        if (!isValidFilingTitle(title)) continue;
 
         const companyName = extractCompanyName(title);
 
-        if (!companyName || companyName.length < 3) {
-          continue;
-        }
+        if (!companyName || companyName.length < 3) continue;
 
         let sourceUrl: URL;
 
@@ -196,9 +153,7 @@ export async function POST() {
           continue;
         }
 
-        if (!SEBI_HOSTS.includes(sourceUrl.hostname)) {
-          continue;
-        }
+        if (!SEBI_HOSTS.includes(sourceUrl.hostname)) continue;
 
         if (
           !sourceUrl.pathname.startsWith(
@@ -219,11 +174,10 @@ export async function POST() {
 
     if (filings.size === 0) {
       throw new Error(
-        `No DRHP records parsed. HTML length: ${html.length}; rows found: ${rows.length}. SEBI response format needs review.`
+        `No DRHP records parsed. HTML length: ${html.length}; rows found: ${rows.length}.`
       );
     }
 
-    // 5. Insert detected filings into the review queue.
     let detected = 0;
     let inserted = 0;
     let duplicates = 0;
@@ -231,7 +185,6 @@ export async function POST() {
     for (const filing of filings.values()) {
       detected++;
 
-      // URL-based hash prevents the same filing being added again.
       const contentHash = createHash("sha256")
         .update(`SEBI|${filing.sourceUrl}`)
         .digest("hex");
@@ -263,15 +216,12 @@ export async function POST() {
       }
 
       if (error) {
-        throw new Error(
-          `IPO queue insert failed: ${error.message}`
-        );
+        throw new Error("IPO queue insert failed.");
       }
 
       inserted++;
     }
 
-    // 6. Save collection result.
     const message =
       `Detected: ${detected}, Inserted: ${inserted}, Duplicates: ${duplicates}`;
 
@@ -288,9 +238,7 @@ export async function POST() {
         message,
       },
       {
-        headers: {
-          "Cache-Control": "no-store",
-        },
+        headers: { "Cache-Control": "no-store" },
       }
     );
   } catch (error) {
@@ -310,10 +258,80 @@ export async function POST() {
       },
       {
         status: 502,
-        headers: {
-          "Cache-Control": "no-store",
-        },
+        headers: { "Cache-Control": "no-store" },
       }
     );
   }
+}
+
+// Manual collection: Owner/Admin only.
+export async function POST(request: NextRequest) {
+  try {
+    const origin = request.headers.get("origin");
+
+    if (origin && origin !== request.nextUrl.origin) {
+      return NextResponse.json(
+        { error: "Invalid request origin." },
+        { status: 403 }
+      );
+    }
+
+    const supabase = await createSupabaseServerClient();
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: "Authentication required." },
+        { status: 401 }
+      );
+    }
+
+    const { data: profile, error: profileError } =
+      await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", user.id)
+        .maybeSingle();
+
+    if (
+      profileError ||
+      !profile ||
+      !["owner", "admin"].includes(profile.role)
+    ) {
+      return NextResponse.json(
+        { error: "Owner/Admin access required." },
+        { status: 403 }
+      );
+    }
+
+    return await collectIpos();
+  } catch (error) {
+    console.error("Manual IPO collection authorization failed:", error);
+
+    return NextResponse.json(
+      { error: "Unable to authorize collection request." },
+      { status: 500 }
+    );
+  }
+}
+
+// Automatic collection: Vercel Cron only.
+export async function GET(request: NextRequest) {
+  const cronSecret = process.env.CRON_SECRET;
+
+  if (
+    !cronSecret ||
+    request.headers.get("authorization") !== `Bearer ${cronSecret}`
+  ) {
+    return NextResponse.json(
+      { error: "Unauthorized cron request." },
+      { status: 401 }
+    );
+  }
+
+  return await collectIpos();
 }

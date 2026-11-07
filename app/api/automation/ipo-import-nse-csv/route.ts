@@ -431,6 +431,100 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Retrieve IDs for both newly inserted and already existing records.
+    const queueIdByHash = new Map<string, string>();
+
+    for (let i = 0; i < hashes.length; i += BATCH_SIZE) {
+      const batch = hashes.slice(i, i + BATCH_SIZE);
+
+      const { data: queueRows, error: queueError } =
+        await supabaseAdmin
+          .from("ipo_import_queue")
+          .select("id, content_hash")
+          .eq("source_name", "NSE")
+          .in("content_hash", batch);
+
+      if (queueError) {
+        console.error("NSE evidence queue lookup failed:", queueError.message);
+        break;
+      }
+
+      for (const item of queueRows || []) {
+        if (item.content_hash) {
+          queueIdByHash.set(item.content_hash, item.id);
+        }
+      }
+    }
+
+    // Save source evidence for new AND duplicate CSV records.
+    let evidenceInserted = 0;
+    let evidenceError: string | null = null;
+
+    const evidenceRecords = records.flatMap((record) => {
+      const queueId = queueIdByHash.get(record.content_hash);
+
+      if (!queueId) return [];
+
+      const evidenceHash = createHash("sha256")
+        .update(
+          [
+            "NSE",
+            "NSE_CSV_FILING_RECORD",
+            record.content_hash,
+            record.source_url || "no-attachment",
+          ].join("|")
+        )
+        .digest("hex");
+
+      return [
+        {
+          queue_id: queueId,
+          source_name: "NSE",
+          source_url: record.source_url,
+          evidence_type: "nse_csv_filing_record",
+          field_name: "drhp_filed_date",
+          field_value: record.drhp_filed_date,
+          issuer_name: record.company_name,
+          is_official_source: Boolean(record.source_url),
+          validation_status: "unverified",
+          content_hash: evidenceHash,
+          observed_at: now,
+          metadata: {
+            export_file_name: file.name,
+            issue_type: "IPO",
+            board_type: record.ipo_type,
+            evidence_scope:
+              "NSE CSV filing record detected. Attachment contents have not been independently fetched or validated.",
+          },
+        },
+      ];
+    });
+
+    for (
+      let i = 0;
+      i < evidenceRecords.length;
+      i += BATCH_SIZE
+    ) {
+      const batch = evidenceRecords.slice(i, i + BATCH_SIZE);
+
+      const { data: savedEvidence, error: saveEvidenceError } =
+        await supabaseAdmin
+          .from("ipo_source_evidence")
+          .upsert(batch, {
+            onConflict: "queue_id,evidence_type,content_hash",
+            ignoreDuplicates: true,
+          })
+          .select("id");
+
+      if (saveEvidenceError) {
+        evidenceError = saveEvidenceError.message;
+        console.error("NSE evidence save failed:", evidenceError);
+        break;
+      }
+
+      evidenceInserted += savedEvidence?.length || 0;
+    }
+
     // Automatically run the central matching engine after import.
     let matchingResult = null;
     let matchingError: string | null = null;
@@ -463,11 +557,11 @@ export async function POST(request: NextRequest) {
       .from("automation_logs")
       .insert({
         task_name: "nse_ipo_csv_import",
-        status: "success",
+        status: evidenceError ? "partial" : "success",
         message:
-          `${importMessage} Matching: ${
-            matchingError ? "failed" : "completed"
-          }. Imported records remain pending and unverified.`,
+          `${importMessage} Evidence inserted ${evidenceInserted}. ` +
+          `Matching: ${matchingError ? "failed" : "completed"}. ` +
+          "Imported records remain pending and unverified.",
       });
 
     if (logError) {
@@ -481,6 +575,9 @@ export async function POST(request: NextRequest) {
         inserted: newRecords.length,
         duplicates,
         skipped,
+        evidenceInserted,
+        evidenceAttempted: evidenceRecords.length,
+        evidenceError,
         matching: matchingResult,
         matchingError,
         message: importMessage,

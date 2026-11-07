@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const NSE_URL =
-  "https://www.nseindia.com/static/companies-listing/public-issue-advertisements";
+"https://www.nseindia.com/companies-listing/corporate-public-issue-advertisements";
 
 const NSE_HOSTS = ["www.nseindia.com", "nseindia.com"];
 

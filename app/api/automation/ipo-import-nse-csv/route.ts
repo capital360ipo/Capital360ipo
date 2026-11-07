@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { normalizeCompanyName } from "@/lib/ipo-matching";
+import { runIpoMatching } from "@/lib/run-ipo-matching";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -152,7 +153,6 @@ function selectSourceUrl(
   values: string[],
   headers: string[]
 ): string | null {
-  // Only inspect columns explicitly marked as attachments.
   for (let i = 0; i < headers.length; i++) {
     if (!headers[i].includes("ATTACHMENT")) continue;
 
@@ -255,7 +255,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Identify columns by their actual header names.
+    // Identify columns by header names.
     const headers = parsedRows[0].map(normalizeHeader);
 
     const companyIndex = getColumnIndex(headers, [
@@ -419,6 +419,8 @@ export async function POST(request: NextRequest) {
         .insert(batch);
 
       if (insertError) {
+        console.error("NSE CSV insert failed:", insertError.message);
+
         return NextResponse.json(
           {
             success: false,
@@ -429,11 +431,48 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    await supabaseAdmin.from("automation_logs").insert({
-      task_name: "nse_ipo_csv_import",
-      status: "success",
-      message: `Detected ${detected}, inserted ${newRecords.length}, duplicates ${duplicates}, skipped ${skipped}. Imported records remain pending and unverified.`,
-    });
+    // Automatically run the central matching engine after import.
+    let matchingResult = null;
+    let matchingError: string | null = null;
+
+    try {
+      matchingResult = await runIpoMatching();
+    } catch (error) {
+      matchingError =
+        error instanceof Error
+          ? error.message
+          : "Unknown matching error";
+
+      console.error(
+        "Automatic NSE IPO matching failed:",
+        matchingError
+      );
+
+      await supabaseAdmin.from("automation_logs").insert({
+        task_name: "nse_ipo_matching",
+        status: "failed",
+        message: matchingError.slice(0, 500),
+      });
+    }
+
+    const importMessage =
+      `Detected ${detected}, inserted ${newRecords.length}, ` +
+      `duplicates ${duplicates}, skipped ${skipped}.`;
+
+    const { error: logError } = await supabaseAdmin
+      .from("automation_logs")
+      .insert({
+        task_name: "nse_ipo_csv_import",
+        status: "success",
+        message:
+          `${importMessage} Matching: ${
+            matchingError ? "failed" : "completed"
+          }. Imported records remain pending and unverified.`,
+      });
+
+    if (logError) {
+      console.error("NSE import log failed:", logError.message);
+    }
 
     return NextResponse.json(
       {
@@ -442,15 +481,21 @@ export async function POST(request: NextRequest) {
         inserted: newRecords.length,
         duplicates,
         skipped,
-        message:
-          "NSE CSV import completed. Records remain pending verification.",
+        matching: matchingResult,
+        matchingError,
+        message: importMessage,
       },
       {
         status: 200,
         headers: { "Cache-Control": "no-store" },
       }
     );
-  } catch {
+  } catch (error) {
+    console.error(
+      "NSE CSV import failed:",
+      error instanceof Error ? error.message : "Unknown error"
+    );
+
     return NextResponse.json(
       {
         success: false,

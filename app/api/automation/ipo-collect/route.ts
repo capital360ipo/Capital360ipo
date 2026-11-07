@@ -4,6 +4,7 @@ import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { runIpoMatching } from "@/lib/run-ipo-matching";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,7 +50,6 @@ function parseDate(value: string): string | null {
   return null;
 }
 
-// Improved company-name extraction for SEBI filing titles.
 function extractCompanyName(title: string): string {
   return cleanText(title)
     .replace(
@@ -230,10 +230,38 @@ async function collectIpos() {
       inserted++;
     }
 
-    const message =
+    const collectionMessage =
       `Detected: ${detected}, Inserted: ${inserted}, Duplicates: ${duplicates}`;
 
-    await writeLog("success", message);
+    // Automatically run matching after successful collection.
+    let matchingResult = null;
+    let matchingError: string | null = null;
+
+    try {
+      matchingResult = await runIpoMatching();
+    } catch (error) {
+      matchingError =
+        error instanceof Error
+          ? error.message
+          : "Unknown matching error";
+
+      console.error(
+        "Automatic IPO matching failed:",
+        matchingError
+      );
+
+      await writeLog(
+        "failed",
+        `Automatic matching failed: ${matchingError}`
+      );
+    }
+
+    await writeLog(
+      "success",
+      `${collectionMessage}. Matching: ${
+        matchingError ? "failed" : "completed"
+      }.`
+    );
 
     return NextResponse.json(
       {
@@ -242,8 +270,10 @@ async function collectIpos() {
         detected,
         inserted,
         duplicates,
+        matching: matchingResult,
+        matchingError,
         review_status: "pending",
-        message,
+        message: collectionMessage,
       },
       {
         headers: { "Cache-Control": "no-store" },
@@ -318,7 +348,10 @@ export async function POST(request: NextRequest) {
 
     return await collectIpos();
   } catch (error) {
-    console.error("Manual IPO collection authorization failed:", error);
+    console.error(
+      "Manual IPO collection authorization failed:",
+      error
+    );
 
     return NextResponse.json(
       { error: "Unable to authorize collection request." },

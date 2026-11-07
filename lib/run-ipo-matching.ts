@@ -44,7 +44,6 @@ export async function runIpoMatching() {
     }
 
     if (page.length < PAGE_SIZE) break;
-
     offset += PAGE_SIZE;
   }
 
@@ -123,12 +122,15 @@ export async function runIpoMatching() {
         .from("ipo_import_queue")
         .update({
           normalized_company_name: record.normalized,
-          confidence_score: bestScores.get(record.id) ?? null,
+          name_similarity_score:
+            bestScores.get(record.id) ?? null,
         })
         .eq("id", record.id);
 
       if (error) {
-        throw new Error("IPO matching metadata update failed.");
+        throw new Error(
+          "IPO matching metadata update failed."
+        );
       }
     }
   }
@@ -142,16 +144,22 @@ export async function runIpoMatching() {
     published: 0,
   };
 
-  await supabaseAdmin.from("automation_logs").insert({
-    task_name: "ipo_matching",
-    status: "success",
-    message:
-      `Processed ${result.processed}; ` +
-      `candidate pairs ${result.candidatePairs}; ` +
-      `candidate records ${result.recordsWithCandidates}; ` +
-      `type mismatches ${result.typeMismatchPairs}. ` +
-      "No automatic verification or publication performed.",
-  });
+  const { error: logError } = await supabaseAdmin
+    .from("automation_logs")
+    .insert({
+      task_name: "ipo_matching",
+      status: "success",
+      message:
+        `Processed ${result.processed}; ` +
+        `candidate pairs ${result.candidatePairs}; ` +
+        `candidate records ${result.recordsWithCandidates}; ` +
+        `type mismatches ${result.typeMismatchPairs}. ` +
+        "Name matching only; no verification or publication performed.",
+    });
+
+  if (logError) {
+    throw new Error("IPO matching audit log could not be saved.");
+  }
 
   return result;
 }

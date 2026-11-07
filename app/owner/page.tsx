@@ -2,6 +2,7 @@ import Link from "next/link";
 import { requireOwner } from "@/lib/require-owner";
 import StaffForm from "./staff-form";
 import IpoCollectorButton from "./ipo-collector-button";
+import IpoMatchingButton from "./ipo-matching-button";
 import NseCsvImport from "./nse-csv-import";
 
 export default async function OwnerDashboard() {
@@ -44,10 +45,13 @@ export default async function OwnerDashboard() {
         {/* SEBI IPO Automation */}
         <IpoCollectorButton />
 
+        {/* IPO Matching Engine */}
+        <IpoMatchingButton />
+
         {/* NSE Official CSV Import */}
         <NseCsvImport />
 
-        {/* Staff Management */}
+        {/* Staff Management - Activation later */}
         <StaffForm />
 
         <section className="mt-6 grid gap-4 sm:grid-cols-2">

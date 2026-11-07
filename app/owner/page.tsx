@@ -1,8 +1,8 @@
-
 import Link from "next/link";
 import { requireOwner } from "@/lib/require-owner";
 import StaffForm from "./staff-form";
 import IpoCollectorButton from "./ipo-collector-button";
+import NseCsvImport from "./nse-csv-import";
 
 export default async function OwnerDashboard() {
   const { user, profile } = await requireOwner();
@@ -45,25 +45,7 @@ export default async function OwnerDashboard() {
         <IpoCollectorButton />
 
         {/* NSE Official CSV Import */}
-        <section className="mt-6 rounded-2xl border border-blue-500/30 bg-slate-900 p-6">
-          <p className="text-sm font-semibold text-blue-400">
-            NSE OFFICIAL DATA
-          </p>
-
-          <h2 className="mt-2 text-xl font-bold">
-            NSE IPO CSV Import
-          </h2>
-
-          <p className="mt-2 text-sm text-slate-400">
-            Official NSE CSV data import system.
-            Automatic validation, duplicate detection
-            aur review queue integration.
-          </p>
-
-          <p className="mt-4 text-sm text-amber-400">
-            CSV Import System — Setup Pending
-          </p>
-        </section>
+        <NseCsvImport />
 
         {/* Staff Management */}
         <StaffForm />

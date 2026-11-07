@@ -8,10 +8,18 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const SEBI_URL =
-  "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListing=yes&sid=3&smid=10&ssid=15";
+const NSE_URL =
+  "https://www.nseindia.com/static/companies-listing/public-issue-advertisements";
 
-const SEBI_HOSTS = ["www.sebi.gov.in", "sebi.gov.in"];
+const NSE_HOSTS = ["www.nseindia.com", "nseindia.com"];
+
+const HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+  Accept: "text/html,application/xhtml+xml",
+  "Accept-Language": "en-US,en;q=0.9",
+  Referer: "https://www.nseindia.com/",
+};
 
 function cleanText(value: string): string {
   return value
@@ -28,18 +36,35 @@ function cleanText(value: string): string {
     .trim();
 }
 
-function parseDate(value: string): string | null {
-  const patterns = [
-    /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b/i,
-    /\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\b/i,
-    /\b\d{4}-\d{2}-\d{2}\b/,
-  ];
+function parseNseDate(value: string): string | null {
+  const numeric = value.match(
+    /\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b/
+  );
 
-  for (const pattern of patterns) {
-    const match = value.match(pattern);
-    if (!match) continue;
+  if (numeric) {
+    const day = Number(numeric[1]);
+    const month = Number(numeric[2]);
+    const year = Number(numeric[3]);
 
-    const date = new Date(match[0]);
+    const date = new Date(Date.UTC(year, month - 1, day));
+
+    if (
+      date.getUTCFullYear() === year &&
+      date.getUTCMonth() === month - 1 &&
+      date.getUTCDate() === day
+    ) {
+      return date.toISOString().slice(0, 10);
+    }
+  }
+
+  const named = value.match(
+    /\b(\d{1,2})[-\s]+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-\s,]+(\d{4})\b/i
+  );
+
+  if (named) {
+    const date = new Date(
+      `${named[2]} ${named[1]}, ${named[3]} UTC`
+    );
 
     if (!Number.isNaN(date.getTime())) {
       return date.toISOString().slice(0, 10);
@@ -49,28 +74,6 @@ function parseDate(value: string): string | null {
   return null;
 }
 
-function extractCompanyName(title: string): string {
-  return title
-    .replace(/\s*[-–—:]\s*Draft Red Herring.*$/i, "")
-    .replace(/\s*[-–—:]\s*UDRHP(?:[-\s]*I{1,2})?.*$/i, "")
-    .replace(/\s*[-–—:]\s*DRHP.*$/i, "")
-    .replace(/\s*[-–—:]\s*Addendum.*$/i, "")
-    .replace(/\s*[-–—:]\s*Corrigendum.*$/i, "")
-    .trim();
-}
-
-function isValidFilingTitle(title: string): boolean {
-  if (!/\b(?:U?DRHP)\b|Draft Red Herring/i.test(title)) {
-    return false;
-  }
-
-  if (/addendum|corrigendum/i.test(title)) {
-    return false;
-  }
-
-  return true;
-}
-
 async function writeLog(
   status: "success" | "failed",
   message: string
@@ -78,19 +81,19 @@ async function writeLog(
   const { error } = await supabaseAdmin
     .from("automation_logs")
     .insert({
-      task_name: "SEBI IPO DRHP Collection",
+      task_name: "NSE IPO DRHP Collection",
       status,
       message: message.slice(0, 500),
     });
 
   if (error) {
-    console.error("Automation log insert failed:", error.message);
+    console.error("NSE log error:", error.message);
   }
 }
 
 export async function POST() {
   try {
-    // 1. Verify login.
+    // 1. Authentication.
     const supabase = await createSupabaseServerClient();
 
     const {
@@ -105,7 +108,7 @@ export async function POST() {
       );
     }
 
-    // 2. Only Owner/Admin can run the collector.
+    // 2. Owner/Admin permission.
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("role")
@@ -123,133 +126,160 @@ export async function POST() {
       );
     }
 
-    // 3. Fetch official SEBI public issues page.
-    const response = await fetch(SEBI_URL, {
+    // 3. Fetch official NSE page.
+    const response = await fetch(NSE_URL, {
       method: "GET",
       cache: "no-store",
-      signal: AbortSignal.timeout(20000),
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; Capital360IPO/1.0)",
-        Accept: "text/html,application/xhtml+xml",
-        Referer: "https://www.sebi.gov.in/",
-      },
+      signal: AbortSignal.timeout(25000),
+      headers: HEADERS,
     });
 
     if (!response.ok) {
-      throw new Error(
-        `SEBI returned HTTP ${response.status}`
-      );
+      throw new Error(`NSE returned HTTP ${response.status}`);
     }
 
     const html = await response.text();
 
     if (!html || html.length < 500) {
-      throw new Error("SEBI returned an empty or incomplete page.");
+      throw new Error("NSE returned an empty or incomplete page.");
     }
 
-    // 4. Parse SEBI listing rows.
-    // The listing contains a date and one or more title links per row.
+    // 4. Parse IPO table rows.
     const rows =
       html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
 
-    const filings = new Map<
+    const cutoff = new Date();
+    cutoff.setFullYear(cutoff.getFullYear() - 1);
+    const cutoffDate = cutoff.toISOString().slice(0, 10);
+
+    const records = new Map<
       string,
       {
         companyName: string;
-        title: string;
+        ipoType: string;
         filingDate: string;
         sourceUrl: string;
+        board: string;
       }
     >();
 
     for (const row of rows) {
-      const rowText = cleanText(row);
-      const filingDate = parseDate(rowText);
+      const cells = [
+        ...row.matchAll(
+          /<td\b[^>]*>([\s\S]*?)<\/td>/gi
+        ),
+      ].map((cell) => cleanText(cell[1]));
 
-      if (!filingDate) continue;
+      if (cells.length < 4) continue;
+
+      const companyName = cells[0];
+      const issueType = cells[1].toLowerCase();
+      const board = cells[2];
+
+      // Only IPO records.
+      if (!issueType.includes("ipo")) continue;
+
+      let ipoType: string;
+
+      if (/sme/i.test(board)) {
+        ipoType = "SME";
+      } else if (/main\s*board/i.test(board)) {
+        ipoType = "Mainboard";
+      } else {
+        continue;
+      }
+
+      // Column 4: Draft Offer Document Date.
+      const filingDate = parseNseDate(cells[3]);
+
+      if (!filingDate || filingDate < cutoffDate) {
+        continue;
+      }
+
+      if (
+        !companyName ||
+        companyName.length < 3 ||
+        /^(name of the company|archives)$/i.test(companyName)
+      ) {
+        continue;
+      }
+
+      // Prefer an official NSE PDF link when available.
+      let sourceUrl = NSE_URL;
 
       const links = [
         ...row.matchAll(
-          /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
+          /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi
         ),
       ];
 
       for (const link of links) {
-        const title = cleanText(link[2]);
-
-        if (!isValidFilingTitle(title)) {
-          continue;
-        }
-
-        const companyName = extractCompanyName(title);
-
-        if (!companyName || companyName.length < 3) {
-          continue;
-        }
-
-        let sourceUrl: URL;
-
         try {
-          sourceUrl = new URL(link[1], SEBI_URL);
+          const url = new URL(link[1], NSE_URL);
+
+          if (
+            NSE_HOSTS.includes(url.hostname) &&
+            /\.pdf(?:$|\?)/i.test(url.href)
+          ) {
+            sourceUrl = url.href;
+            break;
+          }
         } catch {
           continue;
         }
-
-        if (!SEBI_HOSTS.includes(sourceUrl.hostname)) {
-          continue;
-        }
-
-        if (
-          !sourceUrl.pathname.startsWith(
-            "/filings/public-issues/"
-          )
-        ) {
-          continue;
-        }
-
-        filings.set(sourceUrl.href, {
-          companyName,
-          title,
-          filingDate,
-          sourceUrl: sourceUrl.href,
-        });
       }
+
+      const recordKey =
+        `${companyName.toLowerCase()}|${filingDate}`;
+
+      records.set(recordKey, {
+        companyName,
+        ipoType,
+        filingDate,
+        sourceUrl,
+        board,
+      });
     }
 
-    if (filings.size === 0) {
+    if (records.size === 0) {
       throw new Error(
-        `No DRHP records parsed. HTML length: ${html.length}; rows found: ${rows.length}. SEBI response format needs review.`
+        `No recent NSE IPO records parsed. Rows: ${rows.length}, HTML length: ${html.length}.`
       );
     }
 
-    // 5. Insert detected filings into the review queue.
+    // 5. Insert records into review queue.
     let detected = 0;
     let inserted = 0;
     let duplicates = 0;
 
-    for (const filing of filings.values()) {
+    for (const record of records.values()) {
       detected++;
 
-      // URL-based hash prevents the same filing being added again.
+      const externalId =
+        `NSE:${record.companyName.toLowerCase()}:${record.filingDate}`;
+
       const contentHash = createHash("sha256")
-        .update(`SEBI|${filing.sourceUrl}`)
+        .update(externalId)
         .digest("hex");
 
       const { error } = await supabaseAdmin
         .from("ipo_import_queue")
         .insert({
-          source_name: "SEBI",
-          source_url: filing.sourceUrl,
-          external_id: filing.sourceUrl,
-          company_name: filing.companyName,
-          ipo_type: null,
-          drhp_filed_date: filing.filingDate,
+          source_name: "NSE",
+          source_url: record.sourceUrl,
+          external_id: externalId,
+          company_name: record.companyName,
+          ipo_type: record.ipoType,
+          drhp_filed_date: record.filingDate,
           detected_status: "drhp_filed",
           raw_payload: {
-            title: filing.title,
-            filing_date: filing.filingDate,
-            source_url: filing.sourceUrl,
-            source: "SEBI",
+            company_name: record.companyName,
+            issue_type: "IPO",
+            board: record.board,
+            filing_date: record.filingDate,
+            source: "NSE",
+            source_url: record.sourceUrl,
+            source_stage: "Draft Offer Document Date",
           },
           content_hash: contentHash,
           review_status: "pending",
@@ -263,14 +293,14 @@ export async function POST() {
 
       if (error) {
         throw new Error(
-          `IPO queue insert failed: ${error.message}`
+          `NSE queue insert failed: ${error.message}`
         );
       }
 
       inserted++;
     }
 
-    // 6. Save collection result.
+    // 6. Log result.
     const message =
       `Detected: ${detected}, Inserted: ${inserted}, Duplicates: ${duplicates}`;
 
@@ -279,7 +309,7 @@ export async function POST() {
     return NextResponse.json(
       {
         success: true,
-        source: "SEBI",
+        source: "NSE",
         detected,
         inserted,
         duplicates,
@@ -296,16 +326,16 @@ export async function POST() {
     const message =
       error instanceof Error
         ? error.message
-        : "Unknown collection error";
+        : "Unknown NSE collection error";
 
-    console.error("IPO collection failed:", message);
+    console.error("NSE IPO collection failed:", message);
 
     await writeLog("failed", message);
 
     return NextResponse.json(
       {
         success: false,
-        error: "IPO collection failed. Check server logs.",
+        error: "NSE collection failed. Check server logs.",
       },
       {
         status: 502,

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { requireOwner } from "@/lib/require-owner";
 import StaffForm from "./staff-form";
+import IpoCollectorButton from "./ipo-collector-button";
 
 export default async function OwnerDashboard() {
   const { user, profile } = await requireOwner();
@@ -39,19 +40,29 @@ export default async function OwnerDashboard() {
           </p>
         </section>
 
+        {/* IPO Automation */}
+        <IpoCollectorButton />
+
+        {/* Staff Management */}
         <StaffForm />
 
         <section className="mt-6 grid gap-4 sm:grid-cols-2">
           <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-            <h2 className="text-lg font-semibold">Security Control</h2>
+            <h2 className="text-lg font-semibold">
+              Security Control
+            </h2>
             <p className="mt-2 text-sm text-slate-400">
               Roles, permissions aur security settings.
             </p>
-            <p className="mt-4 text-sm text-amber-400">Coming Next</p>
+            <p className="mt-4 text-sm text-amber-400">
+              Coming Next
+            </p>
           </div>
 
           <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-            <h2 className="text-lg font-semibold">IPO Management</h2>
+            <h2 className="text-lg font-semibold">
+              IPO Management
+            </h2>
             <p className="mt-2 text-sm text-slate-400">
               IPO records aur GMP management.
             </p>
@@ -64,11 +75,15 @@ export default async function OwnerDashboard() {
           </div>
 
           <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-            <h2 className="text-lg font-semibold">Audit & Logs</h2>
+            <h2 className="text-lg font-semibold">
+              Audit & Logs
+            </h2>
             <p className="mt-2 text-sm text-slate-400">
               Important system activities ka record.
             </p>
-            <p className="mt-4 text-sm text-amber-400">Coming Next</p>
+            <p className="mt-4 text-sm text-amber-400">
+              Coming Next
+            </p>
           </div>
         </section>
       </div>

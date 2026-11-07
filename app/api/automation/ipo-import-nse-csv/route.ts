@@ -12,6 +12,27 @@ export const dynamic = "force-dynamic";
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024;
 const MAX_ROWS = 2000;
+const BATCH_SIZE = 500;
+
+type ImportRecord = {
+  id: string;
+  source_name: string;
+  source_url: string | null;
+  external_id: string;
+  company_name: string;
+  ipo_type: string;
+  drhp_filed_date: string;
+  detected_status: string;
+  normalized_company_name: string;
+  verification_status: string;
+  confidence_score: null;
+  content_hash: string;
+  raw_payload: Record<string, string>;
+  review_status: string;
+  collected_at: string;
+  created_at: string;
+  updated_at: string;
+};
 
 function parseCsv(csv: string): string[][] {
   const rows: string[][] = [];
@@ -72,12 +93,21 @@ function parseCsv(csv: string): string[][] {
   return rows;
 }
 
+function normalizeHeader(value: string): string {
+  return value
+    .replace(/\u00a0/g, " ")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
 function parseDate(value: string): string | null {
   const match = value.trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
 
   if (!match) return null;
 
   const [, day, month, year] = match;
+
   const date = new Date(
     Date.UTC(Number(year), Number(month) - 1, Number(day))
   );
@@ -95,7 +125,7 @@ function parseDate(value: string): string | null {
 
 function validNseUrl(value: string): string | null {
   try {
-    const url = new URL(value);
+    const url = new URL(value.trim());
 
     if (
       url.protocol !== "https:" ||
@@ -110,13 +140,23 @@ function validNseUrl(value: string): string | null {
   }
 }
 
-function selectSourceUrl(values: string[]): string | null {
-  const attachmentIndexes = [
-    5, 7, 9, 11, 13, 15, 17, 19, 21,
-  ];
+function getColumnIndex(
+  headers: string[],
+  possibleNames: string[]
+): number {
+  const accepted = possibleNames.map(normalizeHeader);
+  return headers.findIndex((header) => accepted.includes(header));
+}
 
-  for (const index of attachmentIndexes) {
-    const value = values[index]?.trim();
+function selectSourceUrl(
+  values: string[],
+  headers: string[]
+): string | null {
+  // Only inspect columns explicitly marked as attachments.
+  for (let i = 0; i < headers.length; i++) {
+    if (!headers[i].includes("ATTACHMENT")) continue;
+
+    const value = values[i]?.trim();
 
     if (!value || value === "-") continue;
 
@@ -193,10 +233,7 @@ export async function POST(request: NextRequest) {
 
     if (file.size === 0 || file.size > MAX_FILE_SIZE) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "CSV must be between 1 byte and 2 MB.",
-        },
+        { success: false, error: "CSV must be between 1 byte and 2 MB." },
         { status: 413 }
       );
     }
@@ -218,55 +255,57 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate actual NSE CSV structure
-    const headers = parsedRows[0].map((value) =>
-      value
-        .replace(/\u00a0/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .toUpperCase()
-    );
+    // Identify columns by their actual header names.
+    const headers = parsedRows[0].map(normalizeHeader);
+
+    const companyIndex = getColumnIndex(headers, [
+      "NAME OF THE COMPANY",
+    ]);
+
+    const issueIndex = getColumnIndex(headers, [
+      "TYPE OF ISSUE",
+    ]);
+
+    const boardIndex = getColumnIndex(headers, [
+      "TYPE OF BOARD",
+    ]);
+
+    const dateIndex = getColumnIndex(headers, [
+      "Draft Offer Document Date",
+    ]);
 
     if (
-      headers[0] !== "NAME OF THE COMPANY" ||
-      headers[1] !== "TYPE OF ISSUE" ||
-      headers[2] !== "TYPE OF BOARD" ||
-      headers[3] !== "DRAFT OFFER DOCUMENT DATE" ||
-      headers.length < 22
+      companyIndex < 0 ||
+      issueIndex < 0 ||
+      boardIndex < 0 ||
+      dateIndex < 0
     ) {
       return NextResponse.json(
         {
           success: false,
-          error: "CSV format does not match the expected NSE advertisement format.",
+          error:
+            "Required NSE columns not found. Company, Issue Type, Board and Draft Offer Document Date are required.",
         },
         { status: 400 }
       );
     }
 
-    const records = [];
+    const records: ImportRecord[] = [];
     const seenHashes = new Set<string>();
 
     let detected = 0;
     let duplicates = 0;
     let skipped = 0;
 
+    const now = new Date().toISOString();
+
     for (const values of parsedRows.slice(1)) {
-      if (values.length !== 22) {
-        skipped++;
-        continue;
-      }
+      const companyName = values[companyIndex]?.trim();
+      const issueType = values[issueIndex]?.trim().toUpperCase();
+      const board = values[boardIndex]?.trim();
+      const draftDate = parseDate(values[dateIndex] || "");
 
-      const companyName = values[0]?.trim();
-      const issueType = values[1]?.trim().toUpperCase();
-      const board = values[2]?.trim();
-      const draftDate = parseDate(values[3] || "");
-
-      // This importer handles IPO records only.
-      if (
-        !companyName ||
-        issueType !== "IPO" ||
-        !draftDate
-      ) {
+      if (!companyName || issueType !== "IPO" || !draftDate) {
         skipped++;
         continue;
       }
@@ -280,9 +319,14 @@ export async function POST(request: NextRequest) {
 
       let ipoType: string;
 
-      if (board.toLowerCase() === "sme board") {
+      const normalizedBoard = normalizeHeader(board || "");
+
+      if (normalizedBoard === "SMEBOARD") {
         ipoType = "SME";
-      } else if (board.toLowerCase() === "main board") {
+      } else if (
+        normalizedBoard === "MAINBOARD" ||
+        normalizedBoard === "MAINBOARDIPO"
+      ) {
         ipoType = "Mainboard";
       } else {
         skipped++;
@@ -292,9 +336,7 @@ export async function POST(request: NextRequest) {
       detected++;
 
       const contentHash = createHash("sha256")
-        .update(
-          `NSE|${normalizedName}|${ipoType}|${draftDate}`
-        )
+        .update(`NSE|${normalizedName}|${ipoType}|${draftDate}`)
         .digest("hex");
 
       if (seenHashes.has(contentHash)) {
@@ -304,17 +346,16 @@ export async function POST(request: NextRequest) {
 
       seenHashes.add(contentHash);
 
-      const rawPayload = Object.fromEntries(
-        parsedRows[0].map((header, index) => [
-          header,
-          values[index] ?? "",
-        ])
-      );
+      const rawPayload: Record<string, string> = {};
+
+      parsedRows[0].forEach((header, index) => {
+        rawPayload[header.trim()] = values[index] ?? "";
+      });
 
       records.push({
         id: randomUUID(),
         source_name: "NSE",
-        source_url: selectSourceUrl(values),
+        source_url: selectSourceUrl(values, headers),
         external_id: `NSE:${contentHash}`,
         company_name: companyName,
         ipo_type: ipoType,
@@ -326,27 +367,32 @@ export async function POST(request: NextRequest) {
         content_hash: contentHash,
         raw_payload: rawPayload,
         review_status: "pending",
-        collected_at: new Date().toISOString(),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        collected_at: now,
+        created_at: now,
+        updated_at: now,
       });
     }
 
-    // Find existing NSE records before inserting.
-    const hashes = records.map((record) => record.content_hash);
+    // Check existing records in batches.
     const existingHashes = new Set<string>();
+    const hashes = records.map((record) => record.content_hash);
 
-    if (hashes.length > 0) {
+    for (let i = 0; i < hashes.length; i += BATCH_SIZE) {
+      const batch = hashes.slice(i, i + BATCH_SIZE);
+
       const { data: existing, error: existingError } =
         await supabaseAdmin
           .from("ipo_import_queue")
           .select("content_hash")
           .eq("source_name", "NSE")
-          .in("content_hash", hashes);
+          .in("content_hash", batch);
 
       if (existingError) {
         return NextResponse.json(
-          { success: false, error: "Could not check existing NSE records." },
+          {
+            success: false,
+            error: "Could not check existing NSE records.",
+          },
           { status: 500 }
         );
       }
@@ -364,11 +410,13 @@ export async function POST(request: NextRequest) {
 
     duplicates += records.length - newRecords.length;
 
-    // Insert only new records into the review queue.
-    if (newRecords.length > 0) {
+    // Insert new records in safe batches.
+    for (let i = 0; i < newRecords.length; i += BATCH_SIZE) {
+      const batch = newRecords.slice(i, i + BATCH_SIZE);
+
       const { error: insertError } = await supabaseAdmin
         .from("ipo_import_queue")
-        .insert(newRecords);
+        .insert(batch);
 
       if (insertError) {
         return NextResponse.json(
@@ -384,7 +432,7 @@ export async function POST(request: NextRequest) {
     await supabaseAdmin.from("automation_logs").insert({
       task_name: "nse_ipo_csv_import",
       status: "success",
-      message: `Detected ${detected}, inserted ${newRecords.length}, duplicates ${duplicates}, skipped ${skipped}. All imported records remain pending and unverified.`,
+      message: `Detected ${detected}, inserted ${newRecords.length}, duplicates ${duplicates}, skipped ${skipped}. Imported records remain pending and unverified.`,
     });
 
     return NextResponse.json(
@@ -394,7 +442,8 @@ export async function POST(request: NextRequest) {
         inserted: newRecords.length,
         duplicates,
         skipped,
-        message: "NSE CSV import completed. Records remain pending verification.",
+        message:
+          "NSE CSV import completed. Records remain pending verification.",
       },
       {
         status: 200,

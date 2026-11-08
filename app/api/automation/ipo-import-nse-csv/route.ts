@@ -1,4 +1,3 @@
-
 import "server-only";
 
 import { createHash, randomUUID } from "crypto";
@@ -14,6 +13,14 @@ export const dynamic = "force-dynamic";
 const MAX_FILE_SIZE = 2 * 1024 * 1024;
 const MAX_ROWS = 2000;
 const BATCH_SIZE = 500;
+
+type AttachmentEvidence = {
+  attachmentColumn: string;
+  fieldName: string;
+  sourceUrl: string;
+  relatedDateColumn: string | null;
+  relatedDateValue: string | null;
+};
 
 type ImportRecord = {
   id: string;
@@ -154,18 +161,66 @@ function selectSourceUrl(
   headers: string[]
 ): string | null {
   for (let i = 0; i < headers.length; i++) {
-    if (!headers[i].includes("ATTACHMENT")) continue;
+    if (!headers[i].endsWith("ATTACHMENT")) continue;
 
-    const value = values[i]?.trim();
-
-    if (!value || value === "-") continue;
-
-    const url = validNseUrl(value);
+    const url = validNseUrl(values[i] || "");
 
     if (url) return url;
   }
 
   return null;
+}
+
+function extractAttachmentEvidence(
+  values: string[],
+  originalHeaders: string[],
+  normalizedHeaders: string[]
+): AttachmentEvidence[] {
+  const attachments: AttachmentEvidence[] = [];
+
+  for (let i = 0; i < normalizedHeaders.length; i++) {
+    const attachmentHeader = normalizedHeaders[i];
+
+    if (!attachmentHeader.endsWith("ATTACHMENT")) {
+      continue;
+    }
+
+    const sourceUrl = validNseUrl(values[i] || "");
+
+    if (!sourceUrl) continue;
+
+    const baseHeader = attachmentHeader.replace(
+      /ATTACHMENT$/,
+      ""
+    );
+
+    const relatedDateIndex = normalizedHeaders.findIndex(
+      (header) => header === baseHeader
+    );
+
+    const relatedDateValue =
+      relatedDateIndex >= 0
+        ? values[relatedDateIndex]?.trim() || null
+        : null;
+
+    const attachmentColumn = originalHeaders[i].trim();
+
+    attachments.push({
+      attachmentColumn,
+      fieldName: baseHeader.toLowerCase(),
+      sourceUrl,
+      relatedDateColumn:
+        relatedDateIndex >= 0
+          ? originalHeaders[relatedDateIndex].trim()
+          : null,
+      relatedDateValue:
+        relatedDateValue && relatedDateValue !== "-"
+          ? relatedDateValue
+          : null,
+    });
+  }
+
+  return attachments;
 }
 
 export async function POST(request: NextRequest) {
@@ -255,8 +310,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Identify columns by header names.
-    const headers = parsedRows[0].map(normalizeHeader);
+    const originalHeaders = parsedRows[0];
+    const headers = originalHeaders.map(normalizeHeader);
 
     const companyIndex = getColumnIndex(headers, [
       "NAME OF THE COMPANY",
@@ -291,6 +346,11 @@ export async function POST(request: NextRequest) {
     }
 
     const records: ImportRecord[] = [];
+    const attachmentsByHash = new Map<
+      string,
+      AttachmentEvidence[]
+    >();
+
     const seenHashes = new Set<string>();
 
     let detected = 0;
@@ -348,9 +408,18 @@ export async function POST(request: NextRequest) {
 
       const rawPayload: Record<string, string> = {};
 
-      parsedRows[0].forEach((header, index) => {
+      originalHeaders.forEach((header, index) => {
         rawPayload[header.trim()] = values[index] ?? "";
       });
+
+      attachmentsByHash.set(
+        contentHash,
+        extractAttachmentEvidence(
+          values,
+          originalHeaders,
+          headers
+        )
+      );
 
       records.push({
         id: randomUUID(),
@@ -373,7 +442,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Check existing records in batches.
+    // Find already imported records.
     const existingHashes = new Set<string>();
     const hashes = records.map((record) => record.content_hash);
 
@@ -410,7 +479,7 @@ export async function POST(request: NextRequest) {
 
     duplicates += records.length - newRecords.length;
 
-    // Insert new records in safe batches.
+    // Insert only genuinely new queue records.
     for (let i = 0; i < newRecords.length; i += BATCH_SIZE) {
       const batch = newRecords.slice(i, i + BATCH_SIZE);
 
@@ -431,8 +500,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Retrieve IDs for both newly inserted and already existing records.
+    // Resolve queue IDs for new and existing records.
     const queueIdByHash = new Map<string, string>();
+    let evidenceError: string | null = null;
 
     for (let i = 0; i < hashes.length; i += BATCH_SIZE) {
       const batch = hashes.slice(i, i + BATCH_SIZE);
@@ -445,7 +515,8 @@ export async function POST(request: NextRequest) {
           .in("content_hash", batch);
 
       if (queueError) {
-        console.error("NSE evidence queue lookup failed:", queueError.message);
+        evidenceError = "Could not retrieve NSE queue record IDs.";
+        console.error("NSE queue lookup failed:", queueError.message);
         break;
       }
 
@@ -456,76 +527,85 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Save source evidence for new AND duplicate CSV records.
-    let evidenceInserted = 0;
-    let evidenceError: string | null = null;
-
+    // Build separate evidence for every attachment.
     const evidenceRecords = records.flatMap((record) => {
       const queueId = queueIdByHash.get(record.content_hash);
 
       if (!queueId) return [];
 
-      const evidenceHash = createHash("sha256")
-        .update(
-          [
-            "NSE",
-            "NSE_CSV_FILING_RECORD",
-            record.content_hash,
-            record.source_url || "no-attachment",
-          ].join("|")
-        )
-        .digest("hex");
+      const attachments =
+        attachmentsByHash.get(record.content_hash) || [];
 
-      return [
-        {
+      return attachments.map((attachment) => {
+        const evidenceHash = createHash("sha256")
+          .update(
+            [
+              "NSE",
+              "NSE_ATTACHMENT",
+              record.content_hash,
+              attachment.fieldName,
+              attachment.sourceUrl,
+              attachment.relatedDateValue || "",
+            ].join("|")
+          )
+          .digest("hex");
+
+        return {
           queue_id: queueId,
           source_name: "NSE",
-          source_url: record.source_url,
-          evidence_type: "nse_csv_filing_record",
-          field_name: "drhp_filed_date",
-          field_value: record.drhp_filed_date,
+          source_url: attachment.sourceUrl,
+          evidence_type: "nse_attachment",
+          field_name: attachment.fieldName,
+          field_value: attachment.relatedDateValue,
           issuer_name: record.company_name,
-          is_official_source: Boolean(record.source_url),
+          is_official_source: true,
           validation_status: "unverified",
           content_hash: evidenceHash,
           observed_at: now,
           metadata: {
+            attachment_column: attachment.attachmentColumn,
+            related_date_column: attachment.relatedDateColumn,
+            related_date_value: attachment.relatedDateValue,
             export_file_name: file.name,
             issue_type: "IPO",
             board_type: record.ipo_type,
             evidence_scope:
-              "NSE CSV filing record detected. Attachment contents have not been independently fetched or validated.",
+              "NSE archive attachment mapped to its exact CSV column. Document contents have not been independently fetched or validated.",
           },
-        },
-      ];
+        };
+      });
     });
 
-    for (
-      let i = 0;
-      i < evidenceRecords.length;
-      i += BATCH_SIZE
-    ) {
-      const batch = evidenceRecords.slice(i, i + BATCH_SIZE);
+    let evidenceInserted = 0;
 
-      const { data: savedEvidence, error: saveEvidenceError } =
-        await supabaseAdmin
-          .from("ipo_source_evidence")
-          .upsert(batch, {
-            onConflict: "queue_id,evidence_type,content_hash",
-            ignoreDuplicates: true,
-          })
-          .select("id");
+    if (!evidenceError) {
+      for (
+        let i = 0;
+        i < evidenceRecords.length;
+        i += BATCH_SIZE
+      ) {
+        const batch = evidenceRecords.slice(i, i + BATCH_SIZE);
 
-      if (saveEvidenceError) {
-        evidenceError = saveEvidenceError.message;
-        console.error("NSE evidence save failed:", evidenceError);
-        break;
+        const { data: savedEvidence, error: saveError } =
+          await supabaseAdmin
+            .from("ipo_source_evidence")
+            .upsert(batch, {
+              onConflict: "queue_id,evidence_type,content_hash",
+              ignoreDuplicates: true,
+            })
+            .select("id");
+
+        if (saveError) {
+          evidenceError = "Could not save NSE attachment evidence.";
+          console.error("NSE evidence save failed:", saveError.message);
+          break;
+        }
+
+        evidenceInserted += savedEvidence?.length || 0;
       }
-
-      evidenceInserted += savedEvidence?.length || 0;
     }
 
-    // Automatically run the central matching engine after import.
+    // Run central matching engine.
     let matchingResult = null;
     let matchingError: string | null = null;
 
@@ -553,15 +633,20 @@ export async function POST(request: NextRequest) {
       `Detected ${detected}, inserted ${newRecords.length}, ` +
       `duplicates ${duplicates}, skipped ${skipped}.`;
 
+    const finalStatus = evidenceError
+      ? "partial"
+      : "success";
+
     const { error: logError } = await supabaseAdmin
       .from("automation_logs")
       .insert({
         task_name: "nse_ipo_csv_import",
-        status: evidenceError ? "partial" : "success",
+        status: finalStatus,
         message:
-          `${importMessage} Evidence inserted ${evidenceInserted}. ` +
+          `${importMessage} Attachment evidence attempted ` +
+          `${evidenceRecords.length}, inserted ${evidenceInserted}. ` +
           `Matching: ${matchingError ? "failed" : "completed"}. ` +
-          "Imported records remain pending and unverified.",
+          "Records remain pending and unverified.",
       });
 
     if (logError) {
@@ -575,8 +660,8 @@ export async function POST(request: NextRequest) {
         inserted: newRecords.length,
         duplicates,
         skipped,
-        evidenceInserted,
-        evidenceAttempted: evidenceRecords.length,
+        attachmentEvidenceAttempted: evidenceRecords.length,
+        attachmentEvidenceInserted: evidenceInserted,
         evidenceError,
         matching: matchingResult,
         matchingError,

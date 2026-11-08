@@ -2,10 +2,16 @@ import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
 import { inflateSync } from "fflate";
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
-
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+
+// pdf-parse v1.1.1: explicit type declaration for TypeScript
+const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (
+  data: Buffer
+) => Promise<{
+  text?: string;
+  numpages?: number;
+}>;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -74,7 +80,9 @@ function validateNseUrl(value: string): URL {
     url.username !== "" ||
     url.password !== ""
   ) {
-    throw new AttachmentError("Attachment URL is not an allowed NSE archive URL.");
+    throw new AttachmentError(
+      "Attachment URL is not an allowed NSE archive URL."
+    );
   }
 
   return url;
@@ -82,7 +90,7 @@ function validateNseUrl(value: string): URL {
 
 async function readResponseWithLimit(
   response: Response,
-  finalUrl: string,
+  finalUrl: string
 ): Promise<DownloadResult> {
   const contentType = response.headers.get("content-type");
   const contentLengthHeader = response.headers.get("content-length");
@@ -110,14 +118,15 @@ async function readResponseWithLimit(
         declared_size_bytes: declaredLength,
         download_limit_bytes: MAX_DOWNLOAD_BYTES,
         observed_bytes: 0,
-      },
+      }
     );
   }
 
   if (!response.body) {
-    throw new AttachmentError("Attachment response has no readable body.", {
-      ...baseDiagnostics,
-    });
+    throw new AttachmentError(
+      "Attachment response has no readable body.",
+      baseDiagnostics
+    );
   }
 
   const reader = response.body.getReader();
@@ -151,7 +160,7 @@ async function readResponseWithLimit(
             observed_bytes: totalBytes,
             download_limit_bytes: MAX_DOWNLOAD_BYTES,
             ...getSignature(prefix),
-          },
+          }
         );
       }
 
@@ -174,7 +183,7 @@ async function readResponseWithLimit(
 }
 
 async function downloadNseFile(
-  originalUrl: string,
+  originalUrl: string
 ): Promise<DownloadResult> {
   let currentUrl = validateNseUrl(originalUrl);
 
@@ -198,22 +207,22 @@ async function downloadNseFile(
       });
     }
 
-    if (
-      response.status >= 300 &&
-      response.status < 400
-    ) {
+    if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
       await response.body?.cancel();
 
       if (!location || redirectCount === 3) {
-        throw new AttachmentError("Invalid or excessive attachment redirects.", {
-          http_status: response.status,
-          redirect_count: redirectCount,
-        });
+        throw new AttachmentError(
+          "Invalid or excessive attachment redirects.",
+          {
+            http_status: response.status,
+            redirect_count: redirectCount,
+          }
+        );
       }
 
       currentUrl = validateNseUrl(
-        new URL(location, currentUrl).toString(),
+        new URL(location, currentUrl).toString()
       );
 
       continue;
@@ -222,11 +231,14 @@ async function downloadNseFile(
     if (!response.ok) {
       await response.body?.cancel();
 
-      throw new AttachmentError("NSE returned an unsuccessful response.", {
-        http_status: response.status,
-        content_type: response.headers.get("content-type"),
-        content_length_header: response.headers.get("content-length"),
-      });
+      throw new AttachmentError(
+        "NSE returned an unsuccessful response.",
+        {
+          http_status: response.status,
+          content_type: response.headers.get("content-type"),
+          content_length_header: response.headers.get("content-length"),
+        }
+      );
     }
 
     return readResponseWithLimit(response, currentUrl.toString());
@@ -236,8 +248,10 @@ async function downloadNseFile(
 }
 
 function isPdf(buffer: Buffer): boolean {
-  return buffer.length >= 5 &&
-    buffer.subarray(0, 5).toString("ascii") === "%PDF-";
+  return (
+    buffer.length >= 5 &&
+    buffer.subarray(0, 5).toString("ascii") === "%PDF-"
+  );
 }
 
 function isZip(buffer: Buffer): boolean {
@@ -287,18 +301,23 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
     centralDisk !== 0 ||
     entriesOnDisk !== totalEntries
   ) {
-    throw new AttachmentError("Multi-disk ZIP files are not supported.");
+    throw new AttachmentError(
+      "Multi-disk ZIP files are not supported."
+    );
   }
 
   if (
     totalEntries > MAX_ZIP_ENTRIES ||
     centralOffset + centralSize > eocdOffset
   ) {
-    throw new AttachmentError("ZIP structure exceeds safety limits.", {
-      zip_entries: totalEntries,
-      max_entries: MAX_ZIP_ENTRIES,
-      central_directory_size: centralSize,
-    });
+    throw new AttachmentError(
+      "ZIP structure exceeds safety limits.",
+      {
+        zip_entries: totalEntries,
+        max_entries: MAX_ZIP_ENTRIES,
+        central_directory_size: centralSize,
+      }
+    );
   }
 
   const pdfs: Buffer[] = [];
@@ -310,7 +329,9 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
       cursor + 46 > zip.length ||
       zip.readUInt32LE(cursor) !== 0x02014b50
     ) {
-      throw new AttachmentError("Invalid ZIP central directory entry.");
+      throw new AttachmentError(
+        "Invalid ZIP central directory entry."
+      );
     }
 
     const method = zip.readUInt16LE(cursor + 10);
@@ -325,7 +346,9 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
       cursor + 46 + fileNameLength + extraLength + commentLength;
 
     if (entryEnd > zip.length) {
-      throw new AttachmentError("ZIP entry exceeds file boundaries.");
+      throw new AttachmentError(
+        "ZIP entry exceeds file boundaries."
+      );
     }
 
     const fileName = zip
@@ -339,53 +362,69 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
     }
 
     if (pdfs.length >= MAX_PDFS_PER_ZIP) {
-      throw new AttachmentError("ZIP contains too many PDF files.", {
-        max_pdfs: MAX_PDFS_PER_ZIP,
-      });
+      throw new AttachmentError(
+        "ZIP contains too many PDF files.",
+        { max_pdfs: MAX_PDFS_PER_ZIP }
+      );
     }
 
     if (
       uncompressedSize > MAX_PDF_BYTES ||
       compressedSize > MAX_DOWNLOAD_BYTES
     ) {
-      throw new AttachmentError("PDF inside ZIP exceeds the size limit.", {
-        file_name: fileName,
-        compressed_size_bytes: compressedSize,
-        uncompressed_size_bytes: uncompressedSize,
-      });
+      throw new AttachmentError(
+        "PDF inside ZIP exceeds the size limit.",
+        {
+          file_name: fileName,
+          compressed_size_bytes: compressedSize,
+          uncompressed_size_bytes: uncompressedSize,
+        }
+      );
     }
 
     totalUncompressed += uncompressedSize;
 
     if (totalUncompressed > MAX_ZIP_UNCOMPRESSED_BYTES) {
-      throw new AttachmentError("ZIP total uncompressed size exceeds the limit.");
+      throw new AttachmentError(
+        "ZIP total uncompressed size exceeds the limit."
+      );
     }
 
     if (
       compressedSize > 0 &&
       uncompressedSize / compressedSize > 100
     ) {
-      throw new AttachmentError("ZIP compression ratio exceeds the safety limit.", {
-        file_name: fileName,
-      });
+      throw new AttachmentError(
+        "ZIP compression ratio exceeds the safety limit.",
+        { file_name: fileName }
+      );
     }
 
     if (method !== 0 && method !== 8) {
-      throw new AttachmentError("Unsupported ZIP compression method.", {
-        file_name: fileName,
-        compression_method: method,
-      });
+      throw new AttachmentError(
+        "Unsupported ZIP compression method.",
+        {
+          file_name: fileName,
+          compression_method: method,
+        }
+      );
     }
 
     if (
       localHeaderOffset + 30 > zip.length ||
       zip.readUInt32LE(localHeaderOffset) !== 0x04034b50
     ) {
-      throw new AttachmentError("Invalid ZIP local file header.");
+      throw new AttachmentError(
+        "Invalid ZIP local file header."
+      );
     }
 
-    const localNameLength = zip.readUInt16LE(localHeaderOffset + 26);
-    const localExtraLength = zip.readUInt16LE(localHeaderOffset + 28);
+    const localNameLength = zip.readUInt16LE(
+      localHeaderOffset + 26
+    );
+    const localExtraLength = zip.readUInt16LE(
+      localHeaderOffset + 28
+    );
 
     const dataOffset =
       localHeaderOffset + 30 + localNameLength + localExtraLength;
@@ -393,7 +432,9 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
     const dataEnd = dataOffset + compressedSize;
 
     if (dataEnd > zip.length) {
-      throw new AttachmentError("ZIP compressed data exceeds file boundaries.");
+      throw new AttachmentError(
+        "ZIP compressed data exceeds file boundaries."
+      );
     }
 
     const compressedData = zip.subarray(dataOffset, dataEnd);
@@ -406,27 +447,31 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
       } else {
         const output = inflateSync(
           new Uint8Array(compressedData),
-          { out: new Uint8Array(uncompressedSize) },
+          { out: new Uint8Array(uncompressedSize) }
         );
 
         pdfBuffer = Buffer.from(output);
       }
     } catch {
-      throw new AttachmentError("Could not decompress PDF inside ZIP.", {
-        file_name: fileName,
-      });
+      throw new AttachmentError(
+        "Could not decompress PDF inside ZIP.",
+        { file_name: fileName }
+      );
     }
 
     if (
       pdfBuffer.length !== uncompressedSize ||
       !isPdf(pdfBuffer)
     ) {
-      throw new AttachmentError("ZIP entry is not a valid PDF.", {
-        file_name: fileName,
-        extracted_size_bytes: pdfBuffer.length,
-        expected_size_bytes: uncompressedSize,
-        ...getSignature(pdfBuffer),
-      });
+      throw new AttachmentError(
+        "ZIP entry is not a valid PDF.",
+        {
+          file_name: fileName,
+          extracted_size_bytes: pdfBuffer.length,
+          expected_size_bytes: uncompressedSize,
+          ...getSignature(pdfBuffer),
+        }
+      );
     }
 
     pdfs.push(pdfBuffer);
@@ -441,10 +486,15 @@ function normalizeText(value: string): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
-function classifyDocument(text: string, fallbackField: string): string {
+function classifyDocument(
+  text: string,
+  fallbackField: string
+): string {
   const value = text.toLowerCase();
 
-  if (/\budrhp\b|updated draft red herring prospectus/.test(value)) {
+  if (
+    /\budrhp\b|updated draft red herring prospectus/.test(value)
+  ) {
     return "UDRHP";
   }
 
@@ -468,7 +518,11 @@ function classifyDocument(text: string, fallbackField: string): string {
     return "PRE_IPO_TRANSACTION_DISCLOSURE";
   }
 
-  if (/public announcement|initial public offer|initial public offering/.test(value)) {
+  if (
+    /public announcement|initial public offer|initial public offering/.test(
+      value
+    )
+  ) {
     return "IPO_PUBLIC_ANNOUNCEMENT";
   }
 
@@ -540,21 +594,27 @@ function extractDocumentDate(text: string): string | null {
 async function parsePdf(
   buffer: Buffer,
   expectedIssuer: string | null,
-  fallbackField: string,
+  fallbackField: string
 ): Promise<ParsedDocument> {
   if (buffer.length > MAX_PDF_BYTES) {
-    throw new AttachmentError("PDF exceeds the PDF size limit.", {
-      pdf_size_bytes: buffer.length,
-      pdf_limit_bytes: MAX_PDF_BYTES,
-      ...getSignature(buffer),
-    });
+    throw new AttachmentError(
+      "PDF exceeds the PDF size limit.",
+      {
+        pdf_size_bytes: buffer.length,
+        pdf_limit_bytes: MAX_PDF_BYTES,
+        ...getSignature(buffer),
+      }
+    );
   }
 
   if (!isPdf(buffer)) {
-    throw new AttachmentError("File is not a valid PDF.", {
-      pdf_size_bytes: buffer.length,
-      ...getSignature(buffer),
-    });
+    throw new AttachmentError(
+      "File is not a valid PDF.",
+      {
+        pdf_size_bytes: buffer.length,
+        ...getSignature(buffer),
+      }
+    );
   }
 
   let parsed: {
@@ -565,22 +625,35 @@ async function parsePdf(
   try {
     parsed = await pdfParse(buffer);
   } catch (error) {
-    throw new AttachmentError("PDF text extraction failed.", {
-      pdf_size_bytes: buffer.length,
-      reason: error instanceof Error ? error.message : "PDF parser error",
-    });
+    throw new AttachmentError(
+      "PDF text extraction failed.",
+      {
+        pdf_size_bytes: buffer.length,
+        reason:
+          error instanceof Error
+            ? error.message
+            : "PDF parser error",
+      }
+    );
   }
 
-  const text = (parsed.text || "").replace(/\s+/g, " ").trim();
+  const text = (parsed.text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
   const issuer = expectedIssuer?.trim() || null;
 
-  let identityStatus: ParsedDocument["identity_match_status"] = "unverified";
+  let identityStatus: ParsedDocument["identity_match_status"] =
+    "unverified";
 
   if (issuer && text) {
     const normalizedIssuer = normalizeText(issuer);
     const normalizedText = normalizeText(text);
 
-    if (normalizedIssuer.length >= 5 && normalizedText.includes(normalizedIssuer)) {
+    if (
+      normalizedIssuer.length >= 5 &&
+      normalizedText.includes(normalizedIssuer)
+    ) {
       identityStatus = "matched";
     } else {
       identityStatus = "ambiguous";
@@ -600,7 +673,7 @@ async function parsePdf(
 async function processAttachment(
   url: string,
   expectedIssuer: string | null,
-  fallbackField: string,
+  fallbackField: string
 ): Promise<{
   documents: ParsedDocument[];
   diagnostics: Diagnostics;
@@ -622,7 +695,7 @@ async function processAttachment(
       const document = await parsePdf(
         buffer,
         expectedIssuer,
-        fallbackField,
+        fallbackField
       );
 
       return {
@@ -658,16 +731,17 @@ async function processAttachment(
     }
 
     if (pdfs.length === 0) {
-      throw new AttachmentError("ZIP contains no supported PDF documents.", {
-        ...diagnostics,
-      });
+      throw new AttachmentError(
+        "ZIP contains no supported PDF documents.",
+        diagnostics
+      );
     }
 
     const documents: ParsedDocument[] = [];
 
     for (const pdf of pdfs) {
       documents.push(
-        await parsePdf(pdf, expectedIssuer, fallbackField),
+        await parsePdf(pdf, expectedIssuer, fallbackField)
       );
     }
 
@@ -680,11 +754,14 @@ async function processAttachment(
     };
   }
 
-  throw new AttachmentError("Downloaded file is neither a valid PDF nor ZIP.", {
-    ...diagnostics,
-    downloaded_bytes: buffer.length,
-    ...getSignature(buffer),
-  });
+  throw new AttachmentError(
+    "Downloaded file is neither a valid PDF nor ZIP.",
+    {
+      ...diagnostics,
+      downloaded_bytes: buffer.length,
+      ...getSignature(buffer),
+    }
+  );
 }
 
 export async function POST(request: NextRequest) {
@@ -697,13 +774,17 @@ export async function POST(request: NextRequest) {
 
       if (originHost !== requestHost) {
         return NextResponse.json(
-          { success: false, error: "Invalid request origin." },
-          { status: 403 },
+          {
+            success: false,
+            error: "Invalid request origin.",
+          },
+          { status: 403 }
         );
       }
     }
 
     const supabase = await createSupabaseServerClient();
+
     const {
       data: { user },
       error: authError,
@@ -711,8 +792,11 @@ export async function POST(request: NextRequest) {
 
     if (authError || !user) {
       return NextResponse.json(
-        { success: false, error: "Authentication required." },
-        { status: 401 },
+        {
+          success: false,
+          error: "Authentication required.",
+        },
+        { status: 401 }
       );
     }
 
@@ -728,15 +812,18 @@ export async function POST(request: NextRequest) {
       !["owner", "admin"].includes(profile.role)
     ) {
       return NextResponse.json(
-        { success: false, error: "Owner or admin permission required." },
-        { status: 403 },
+        {
+          success: false,
+          error: "Owner or admin permission required.",
+        },
+        { status: 403 }
       );
     }
 
     const { data: rows, error: queryError } = await supabaseAdmin
       .from("ipo_source_evidence")
       .select(
-        "id, source_name, source_url, evidence_type, field_name, issuer_name, metadata, validation_status",
+        "id, source_name, source_url, evidence_type, field_name, issuer_name, metadata, validation_status"
       )
       .eq("source_name", "NSE")
       .eq("evidence_type", "nse_attachment")
@@ -745,7 +832,9 @@ export async function POST(request: NextRequest) {
       .limit(100);
 
     if (queryError) {
-      throw new Error(`Evidence query failed: ${queryError.message}`);
+      throw new Error(
+        `Evidence query failed: ${queryError.message}`
+      );
     }
 
     const eligibleRows = (rows || []).filter((row: any) => {
@@ -763,7 +852,7 @@ export async function POST(request: NextRequest) {
 
     let processed = 0;
     let failed = 0;
-    let skipped = eligibleRows.length - batch.length;
+    const skipped = eligibleRows.length - batch.length;
 
     const results: Array<{
       id: string;
@@ -774,17 +863,21 @@ export async function POST(request: NextRequest) {
     for (const row of batch) {
       const metadata = row.metadata || {};
       const previousParse = metadata.document_parse || {};
-      const previousAttempts = Number(previousParse.attempt_count || 0);
+      const previousAttempts = Number(
+        previousParse.attempt_count || 0
+      );
 
       try {
         if (!row.source_url) {
-          throw new AttachmentError("Attachment URL is missing.");
+          throw new AttachmentError(
+            "Attachment URL is missing."
+          );
         }
 
         const parsed = await processAttachment(
           row.source_url,
           row.issuer_name || null,
-          row.field_name || "unknown",
+          row.field_name || "unknown"
         );
 
         const newMetadata = {
@@ -806,7 +899,9 @@ export async function POST(request: NextRequest) {
           .eq("id", row.id);
 
         if (updateError) {
-          throw new Error(`Evidence update failed: ${updateError.message}`);
+          throw new Error(
+            `Evidence update failed: ${updateError.message}`
+          );
         }
 
         processed++;
@@ -833,7 +928,9 @@ export async function POST(request: NextRequest) {
         const failureMetadata = {
           ...metadata,
           document_parse: {
-            status: permanent ? "failed_permanent" : "failed",
+            status: permanent
+              ? "failed_permanent"
+              : "failed",
             processed_at: new Date().toISOString(),
             attempt_count: attemptCount,
             error: message,
@@ -853,7 +950,9 @@ export async function POST(request: NextRequest) {
 
         results.push({
           id: row.id,
-          status: permanent ? "failed_permanent" : "failed",
+          status: permanent
+            ? "failed_permanent"
+            : "failed",
           message: updateError
             ? `${message}; metadata update failed: ${updateError.message}`
             : message,
@@ -870,7 +969,10 @@ export async function POST(request: NextRequest) {
 
     await supabaseAdmin.from("automation_logs").insert({
       task_name: "nse_attachment_parse",
-      status: failed > 0 ? "partial_success" : "success",
+      status:
+        failed > 0
+          ? "partial_success"
+          : "success",
       message: JSON.stringify(summary),
     });
 
@@ -882,7 +984,9 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Unexpected parser error";
+      error instanceof Error
+        ? error.message
+        : "Unexpected parser error";
 
     try {
       await supabaseAdmin.from("automation_logs").insert({
@@ -891,7 +995,7 @@ export async function POST(request: NextRequest) {
         message,
       });
     } catch {
-      // Do not hide the original parser error.
+      // Preserve the original parser error.
     }
 
     return NextResponse.json(
@@ -899,7 +1003,7 @@ export async function POST(request: NextRequest) {
         success: false,
         error: message,
       },
-      { status: 500 },
+      { status: 500 }
     );
   }
 }

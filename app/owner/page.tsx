@@ -2,8 +2,8 @@ import Link from "next/link";
 import { requireOwner } from "@/lib/require-owner";
 import StaffForm from "./staff-form";
 import IpoCollectorButton from "./ipo-collector-button";
-import IpoMatchingButton from "./ipo-matching-button";
 import NseCsvImport from "./nse-csv-import";
+import IpoLifecycleButton from "./ipo-lifecycle-button";
 
 export default async function OwnerDashboard() {
   const { user, profile } = await requireOwner();
@@ -42,58 +42,42 @@ export default async function OwnerDashboard() {
           </p>
         </section>
 
-        {/* SEBI IPO Automation */}
-        <IpoCollectorButton />
+        <div className="mt-6 space-y-6">
+          <IpoCollectorButton />
 
-        {/* IPO Matching Engine */}
-        <IpoMatchingButton />
+          <NseCsvImport />
 
-        {/* NSE Official CSV Import */}
-        <NseCsvImport />
+          <IpoLifecycleButton />
 
-        {/* Staff Management - Activation later */}
-        <StaffForm />
+          <StaffForm />
 
-        <section className="mt-6 grid gap-4 sm:grid-cols-2">
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-            <h2 className="text-lg font-semibold">
-              Security Control
-            </h2>
+          <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
+            <h2 className="text-lg font-bold">Security Control</h2>
             <p className="mt-2 text-sm text-slate-400">
-              Roles, permissions aur security settings.
+              Owner access and security management.
             </p>
-            <p className="mt-4 text-sm text-amber-400">
-              Coming Next
-            </p>
-          </div>
+          </section>
 
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-            <h2 className="text-lg font-semibold">
-              IPO Management
-            </h2>
+          <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
+            <h2 className="text-lg font-bold">IPO Management</h2>
             <p className="mt-2 text-sm text-slate-400">
-              IPO records aur GMP management.
+              IPO records and lifecycle management.
             </p>
             <Link
               href="/ipos"
-              className="mt-4 inline-block text-sm text-emerald-400"
+              className="mt-4 inline-block text-sm font-semibold text-emerald-400"
             >
-              View IPOs →
+              View IPO Section →
             </Link>
-          </div>
+          </section>
 
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-            <h2 className="text-lg font-semibold">
-              Audit & Logs
-            </h2>
+          <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
+            <h2 className="text-lg font-bold">Audit & Logs</h2>
             <p className="mt-2 text-sm text-slate-400">
-              Important system activities ka record.
+              Monitor automation activity and system events.
             </p>
-            <p className="mt-4 text-sm text-amber-400">
-              Coming Next
-            </p>
-          </div>
-        </section>
+          </section>
+        </div>
       </div>
     </main>
   );

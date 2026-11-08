@@ -1,9 +1,10 @@
+
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { inflateSync } from "fflate";
+import { inflateRawSync } from "fflate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,9 +16,17 @@ const MAX_ZIP_TOTAL_BYTES = 15 * 1024 * 1024;
 const MAX_PDFS_PER_ATTACHMENT = 5;
 const BATCH_SIZE = 5;
 
-const pdfParse = require("pdf-parse") as (
+type PdfResult = {
+  text?: string;
+  numpages?: number;
+};
+
+// Important: Load the library's actual parser file.
+// Do not load the package root, because pdf-parse 1.1.1
+// can execute its bundled test-file code during deployment.
+const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (
   data: Buffer
-) => Promise<{ text?: string; numpages?: number }>;
+) => Promise<PdfResult>;
 
 type EvidenceRow = {
   id: string;
@@ -51,30 +60,45 @@ function getFileName(url: string) {
   }
 }
 
-function classifyDocument(text: string, fieldName: string | null, fileName: string) {
-  const sample = `${fieldName || ""} ${fileName} ${text.slice(0, 30000)}`.toLowerCase();
+function classifyDocument(
+  text: string,
+  fieldName: string | null,
+  fileName: string
+) {
+  const sample =
+    `${fieldName || ""} ${fileName} ${text.slice(0, 30000)}`.toLowerCase();
 
   if (/basis of allotment|basis-of-allotment/.test(sample)) {
     return "basis_of_allotment";
   }
+
   if (/price band|price-band|price range/.test(sample)) {
     return "price_band_advertisement";
   }
-  if (/pre.?filing|pre.?filed/.test(sample) && /advertisement|public issue/.test(sample)) {
+
+  if (
+    /pre.?filing|pre.?filed/.test(sample) &&
+    /advertisement|public issue/.test(sample)
+  ) {
     return "pre_filing_advertisement";
   }
+
   if (/\bdrhp\b|draft red herring prospectus/.test(sample)) {
     return "drhp";
   }
+
   if (/\brhp\b|red herring prospectus/.test(sample)) {
     return "rhp";
   }
+
   if (/corrigendum|addendum/.test(sample)) {
     return "addendum_corrigendum";
   }
+
   if (/public announcement/.test(sample)) {
     return "public_announcement";
   }
+
   if (/advertisement|public issue|issue opening|issue closing/.test(sample)) {
     return "issue_advertisement";
   }
@@ -93,7 +117,10 @@ function extractDateCandidates(text: string) {
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
       found.add(match[0]);
-      if (found.size >= 20) return [...found];
+
+      if (found.size >= 20) {
+        return [...found];
+      }
     }
   }
 
@@ -125,6 +152,7 @@ async function downloadNseFile(initialUrl: string): Promise<Buffer> {
 
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
+
       if (!location || redirectCount === 3) {
         throw new Error("Attachment redirect could not be followed safely.");
       }
@@ -148,7 +176,10 @@ async function downloadNseFile(initialUrl: string): Promise<Buffer> {
       throw new Error(`NSE download failed with HTTP ${response.status}.`);
     }
 
-    const contentLength = Number(response.headers.get("content-length") || 0);
+    const contentLength = Number(
+      response.headers.get("content-length") || 0
+    );
+
     if (contentLength > MAX_DOWNLOAD_BYTES) {
       throw new Error("Attachment exceeds the download size limit.");
     }
@@ -218,13 +249,16 @@ function extractPdfsFromZip(zipBuffer: Buffer) {
     const localOffset = zipBuffer.readUInt32LE(cursor + 42);
 
     const nameStart = cursor + 46;
+
     const entryName = zipBuffer
       .subarray(nameStart, nameStart + nameLength)
       .toString("utf8");
 
     cursor += 46 + nameLength + extraLength + commentLength;
 
-    if (entryName.endsWith("/")) continue;
+    if (entryName.endsWith("/")) {
+      continue;
+    }
 
     if (
       (flags & 1) !== 0 ||
@@ -237,6 +271,7 @@ function extractPdfsFromZip(zipBuffer: Buffer) {
     }
 
     totalUncompressed += uncompressedSize;
+
     if (totalUncompressed > MAX_ZIP_TOTAL_BYTES) {
       throw new Error("ZIP total uncompressed size exceeds the safety limit.");
     }
@@ -250,19 +285,23 @@ function extractPdfsFromZip(zipBuffer: Buffer) {
 
     const localNameLength = zipBuffer.readUInt16LE(localOffset + 26);
     const localExtraLength = zipBuffer.readUInt16LE(localOffset + 28);
+
     const dataStart = localOffset + 30 + localNameLength + localExtraLength;
     const dataEnd = dataStart + compressedSize;
 
-    if (dataEnd > zipBuffer.length) continue;
+    if (dataEnd > zipBuffer.length) {
+      continue;
+    }
 
     const compressedData = zipBuffer.subarray(dataStart, dataEnd);
 
     let output: Uint8Array;
+
     try {
       output =
         method === 0
           ? new Uint8Array(compressedData)
-          : inflateSync(new Uint8Array(compressedData));
+          : inflateRawSync(new Uint8Array(compressedData));
     } catch {
       continue;
     }
@@ -275,12 +314,19 @@ function extractPdfsFromZip(zipBuffer: Buffer) {
     }
 
     const pdfBuffer = Buffer.from(output);
+
     if (
       entryName.toLowerCase().endsWith(".pdf") &&
       pdfBuffer.subarray(0, 5).toString("ascii") === "%PDF-"
     ) {
-      pdfs.push({ name: entryName, data: pdfBuffer });
-      if (pdfs.length >= MAX_PDFS_PER_ATTACHMENT) break;
+      pdfs.push({
+        name: entryName,
+        data: pdfBuffer,
+      });
+
+      if (pdfs.length >= MAX_PDFS_PER_ATTACHMENT) {
+        break;
+      }
     }
   }
 
@@ -296,7 +342,10 @@ async function parsePdf(buffer: Buffer) {
   }
 
   const parsed = await pdfParse(buffer);
-  return (parsed.text || "").replace(/\u0000/g, " ").slice(0, 120000);
+
+  return (parsed.text || "")
+    .replace(/\u0000/g, " ")
+    .slice(0, 120000);
 }
 
 async function processAttachment(row: EvidenceRow) {
@@ -306,10 +355,13 @@ async function processAttachment(row: EvidenceRow) {
   let pdfFiles: { name: string; data: Buffer }[] = [];
 
   if (downloaded.subarray(0, 5).toString("ascii") === "%PDF-") {
-    pdfFiles = [{ name: fileName, data: downloaded }];
-  } else if (
-    downloaded.subarray(0, 2).toString("ascii") === "PK"
-  ) {
+    pdfFiles = [
+      {
+        name: fileName,
+        data: downloaded,
+      },
+    ];
+  } else if (downloaded.subarray(0, 2).toString("ascii") === "PK") {
     pdfFiles = extractPdfsFromZip(downloaded);
   } else {
     throw new Error("Downloaded attachment is neither a PDF nor a supported ZIP.");
@@ -331,13 +383,20 @@ async function processAttachment(row: EvidenceRow) {
     throw new Error("Could not load the related IPO queue record.");
   }
 
-  const expectedCompany = queueResult.data?.company_name || row.issuer_name || "";
+  const expectedCompany =
+    queueResult.data?.company_name || row.issuer_name || "";
 
   const documents = [];
 
   for (const pdf of pdfFiles) {
     const text = await parsePdf(pdf.data);
-    const documentType = classifyDocument(text, row.field_name, pdf.name);
+
+    const documentType = classifyDocument(
+      text,
+      row.field_name,
+      pdf.name
+    );
+
     const dates = extractDateCandidates(text);
 
     const normalizedExpected = normalizeName(expectedCompany);
@@ -377,17 +436,24 @@ export async function POST(request: NextRequest) {
     const host = request.headers.get("host");
 
     if (!origin || !host || new URL(origin).host !== host) {
-      return json({ success: false, error: "Invalid request origin." }, 403);
+      return json(
+        { success: false, error: "Invalid request origin." },
+        403
+      );
     }
 
     const supabase = await createSupabaseServerClient();
+
     const {
       data: { user },
       error: authError,
     } = await supabase.auth.getUser();
 
     if (authError || !user) {
-      return json({ success: false, error: "Authentication required." }, 401);
+      return json(
+        { success: false, error: "Authentication required." },
+        401
+      );
     }
 
     const { data: profile, error: profileError } = await supabase
@@ -401,7 +467,10 @@ export async function POST(request: NextRequest) {
       !profile ||
       !["owner", "admin"].includes(profile.role)
     ) {
-      return json({ success: false, error: "Owner or admin permission required." }, 403);
+      return json(
+        { success: false, error: "Owner or admin permission required." },
+        403
+      );
     }
 
     const { data: rows, error: fetchError } = await supabaseAdmin
@@ -416,7 +485,9 @@ export async function POST(request: NextRequest) {
       .limit(100);
 
     if (fetchError) {
-      throw new Error(`Could not load attachment evidence: ${fetchError.message}`);
+      throw new Error(
+        `Could not load attachment evidence: ${fetchError.message}`
+      );
     }
 
     const pendingRows = ((rows || []) as EvidenceRow[])
@@ -424,6 +495,7 @@ export async function POST(request: NextRequest) {
         const parseInfo = row.metadata?.document_parse as
           | Record<string, unknown>
           | undefined;
+
         return parseInfo?.status !== "completed";
       })
       .slice(0, BATCH_SIZE);
@@ -439,7 +511,12 @@ export async function POST(request: NextRequest) {
 
     let processed = 0;
     let failed = 0;
-    const results = [];
+
+    const results: {
+      id: string;
+      status: string;
+      error?: string;
+    }[] = [];
 
     for (const row of pendingRows) {
       const existingMetadata = row.metadata || {};
@@ -458,16 +535,24 @@ export async function POST(request: NextRequest) {
           .eq("id", row.id);
 
         if (updateError) {
-          throw new Error(`Evidence update failed: ${updateError.message}`);
+          throw new Error(
+            `Evidence update failed: ${updateError.message}`
+          );
         }
 
         processed++;
-        results.push({ id: row.id, status: "completed" });
+
+        results.push({
+          id: row.id,
+          status: "completed",
+        });
       } catch (error) {
         failed++;
 
         const message =
-          error instanceof Error ? error.message : "Unknown parsing error";
+          error instanceof Error
+            ? error.message
+            : "Unknown parsing error";
 
         await supabaseAdmin
           .from("ipo_source_evidence")
@@ -494,7 +579,12 @@ export async function POST(request: NextRequest) {
 
     await supabaseAdmin.from("automation_logs").insert({
       task_name: "nse_attachment_parse",
-      status: failed === 0 ? "success" : processed > 0 ? "partial" : "failed",
+      status:
+        failed === 0
+          ? "success"
+          : processed > 0
+            ? "partial"
+            : "failed",
       message: `Processed: ${processed}, failed: ${failed}, batch size: ${pendingRows.length}.`,
     });
 
@@ -508,7 +598,9 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Unknown server error";
+      error instanceof Error
+        ? error.message
+        : "Unknown server error";
 
     await supabaseAdmin.from("automation_logs").insert({
       task_name: "nse_attachment_parse",
@@ -516,6 +608,9 @@ export async function POST(request: NextRequest) {
       message: message.slice(0, 500),
     });
 
-    return json({ success: false, error: message }, 500);
+    return json(
+      { success: false, error: message },
+      500
+    );
   }
 }

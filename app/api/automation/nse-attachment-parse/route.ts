@@ -4,7 +4,7 @@ import "server-only";
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { inflateRawSync } from "fflate";
+import { decompressSync } from "fflate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,13 +21,6 @@ type PdfResult = {
   numpages?: number;
 };
 
-// Important: Load the library's actual parser file.
-// Do not load the package root, because pdf-parse 1.1.1
-// can execute its bundled test-file code during deployment.
-const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (
-  data: Buffer
-) => Promise<PdfResult>;
-
 type EvidenceRow = {
   id: string;
   queue_id: string | null;
@@ -39,6 +32,12 @@ type EvidenceRow = {
   issuer_name: string | null;
   metadata: Record<string, unknown> | null;
 };
+
+// Load the parser implementation directly.
+// Avoid the package root, which can execute test-file code.
+const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (
+  data: Buffer
+) => Promise<PdfResult>;
 
 function json(data: unknown, status = 200) {
   return NextResponse.json(data, { status });
@@ -197,15 +196,15 @@ async function downloadNseFile(initialUrl: string): Promise<Buffer> {
 }
 
 function extractPdfsFromZip(zipBuffer: Buffer) {
-  const eocdSignature = 0x06054b50;
-  const centralSignature = 0x02014b50;
-  const localSignature = 0x04034b50;
+  const EOCD = 0x06054b50;
+  const CENTRAL = 0x02014b50;
+  const LOCAL = 0x04034b50;
 
   const searchStart = Math.max(0, zipBuffer.length - 65557);
   let eocdOffset = -1;
 
   for (let i = zipBuffer.length - 22; i >= searchStart; i--) {
-    if (zipBuffer.readUInt32LE(i) === eocdSignature) {
+    if (zipBuffer.readUInt32LE(i) === EOCD) {
       eocdOffset = i;
       break;
     }
@@ -215,16 +214,22 @@ function extractPdfsFromZip(zipBuffer: Buffer) {
     throw new Error("Invalid ZIP: end-of-directory record not found.");
   }
 
+  const diskNumber = zipBuffer.readUInt16LE(eocdOffset + 4);
+  const centralDisk = zipBuffer.readUInt16LE(eocdOffset + 6);
+  const entriesOnDisk = zipBuffer.readUInt16LE(eocdOffset + 8);
   const entryCount = zipBuffer.readUInt16LE(eocdOffset + 10);
   const centralSize = zipBuffer.readUInt32LE(eocdOffset + 12);
   const centralOffset = zipBuffer.readUInt32LE(eocdOffset + 16);
 
   if (
-    entryCount > MAX_ZIP_ENTRIES ||
+    diskNumber !== 0 ||
+    centralDisk !== 0 ||
+    entriesOnDisk !== entryCount ||
     entryCount === 0 ||
-    centralOffset + centralSize > zipBuffer.length
+    entryCount > MAX_ZIP_ENTRIES ||
+    centralOffset + centralSize > eocdOffset
   ) {
-    throw new Error("ZIP entry count or directory size is not allowed.");
+    throw new Error("ZIP structure or entry count is not allowed.");
   }
 
   const pdfs: { name: string; data: Buffer }[] = [];
@@ -234,7 +239,7 @@ function extractPdfsFromZip(zipBuffer: Buffer) {
   for (let i = 0; i < entryCount; i++) {
     if (
       cursor + 46 > zipBuffer.length ||
-      zipBuffer.readUInt32LE(cursor) !== centralSignature
+      zipBuffer.readUInt32LE(cursor) !== CENTRAL
     ) {
       throw new Error("Invalid ZIP central directory.");
     }
@@ -249,12 +254,15 @@ function extractPdfsFromZip(zipBuffer: Buffer) {
     const localOffset = zipBuffer.readUInt32LE(cursor + 42);
 
     const nameStart = cursor + 46;
-
     const entryName = zipBuffer
       .subarray(nameStart, nameStart + nameLength)
       .toString("utf8");
 
     cursor += 46 + nameLength + extraLength + commentLength;
+
+    if (cursor > centralOffset + centralSize) {
+      throw new Error("Invalid ZIP directory entry boundaries.");
+    }
 
     if (entryName.endsWith("/")) {
       continue;
@@ -278,13 +286,19 @@ function extractPdfsFromZip(zipBuffer: Buffer) {
 
     if (
       localOffset + 30 > zipBuffer.length ||
-      zipBuffer.readUInt32LE(localOffset) !== localSignature
+      zipBuffer.readUInt32LE(localOffset) !== LOCAL
     ) {
       continue;
     }
 
+    const localFlags = zipBuffer.readUInt16LE(localOffset + 6);
+    const localMethod = zipBuffer.readUInt16LE(localOffset + 8);
     const localNameLength = zipBuffer.readUInt16LE(localOffset + 26);
     const localExtraLength = zipBuffer.readUInt16LE(localOffset + 28);
+
+    if (localFlags !== flags || localMethod !== method) {
+      continue;
+    }
 
     const dataStart = localOffset + 30 + localNameLength + localExtraLength;
     const dataEnd = dataStart + compressedSize;
@@ -301,7 +315,7 @@ function extractPdfsFromZip(zipBuffer: Buffer) {
       output =
         method === 0
           ? new Uint8Array(compressedData)
-          : inflateRawSync(new Uint8Array(compressedData));
+          : decompressSync(new Uint8Array(compressedData));
     } catch {
       continue;
     }
@@ -355,12 +369,7 @@ async function processAttachment(row: EvidenceRow) {
   let pdfFiles: { name: string; data: Buffer }[] = [];
 
   if (downloaded.subarray(0, 5).toString("ascii") === "%PDF-") {
-    pdfFiles = [
-      {
-        name: fileName,
-        data: downloaded,
-      },
-    ];
+    pdfFiles = [{ name: fileName, data: downloaded }];
   } else if (downloaded.subarray(0, 2).toString("ascii") === "PK") {
     pdfFiles = extractPdfsFromZip(downloaded);
   } else {

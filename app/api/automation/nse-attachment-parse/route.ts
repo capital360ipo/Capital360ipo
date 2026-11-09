@@ -1,3 +1,4 @@
+
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -5,13 +6,9 @@ import { inflateSync } from "fflate";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
-// pdf-parse v1.1.1: explicit type declaration for TypeScript
 const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (
   data: Buffer
-) => Promise<{
-  text?: string;
-  numpages?: number;
-}>;
+) => Promise<{ text?: string; numpages?: number }>;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,11 +41,23 @@ type DownloadResult = {
   diagnostics: Diagnostics;
 };
 
+type ExtractedPdf = {
+  fileName: string;
+  buffer: Buffer;
+};
+
 type ParsedDocument = {
+  attachment_name: string;
   document_type: string;
   extracted_date: string | null;
+  expected_issuer_name: string | null;
   issuer_name: string | null;
-  identity_match_status: "matched" | "ambiguous" | "mismatch" | "unverified";
+  identity_match_status:
+    | "matched"
+    | "ambiguous"
+    | "mismatch"
+    | "unverified";
+  extraction_quality: "good" | "low" | "ocr_required";
   page_count: number | null;
   text_excerpt: string;
 };
@@ -62,6 +71,17 @@ function getSignature(buffer: Buffer): Diagnostics {
       .toString("latin1")
       .replace(/[^\x20-\x7e]/g, "."),
   };
+}
+
+function getAttachmentName(value: string): string {
+  try {
+    const url = new URL(value);
+    const rawName = url.pathname.split("/").pop() || "attachment";
+
+    return decodeURIComponent(rawName).slice(0, 250);
+  } catch {
+    return "attachment";
+  }
 }
 
 function validateNseUrl(value: string): URL {
@@ -94,6 +114,7 @@ async function readResponseWithLimit(
 ): Promise<DownloadResult> {
   const contentType = response.headers.get("content-type");
   const contentLengthHeader = response.headers.get("content-length");
+
   const declaredLength = contentLengthHeader
     ? Number(contentLengthHeader)
     : null;
@@ -117,7 +138,6 @@ async function readResponseWithLimit(
         ...baseDiagnostics,
         declared_size_bytes: declaredLength,
         download_limit_bytes: MAX_DOWNLOAD_BYTES,
-        observed_bytes: 0,
       }
     );
   }
@@ -196,14 +216,16 @@ async function downloadNseFile(
         redirect: "manual",
         signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
         headers: {
-          Accept: "application/pdf, application/zip, application/octet-stream",
+          Accept:
+            "application/pdf, application/zip, application/octet-stream",
           "User-Agent": "Capital360IPO-DocumentParser/1.0",
         },
       });
     } catch (error) {
       throw new AttachmentError("NSE attachment download failed.", {
         url: currentUrl.toString(),
-        reason: error instanceof Error ? error.message : "Network error",
+        reason:
+          error instanceof Error ? error.message : "Network error",
       });
     }
 
@@ -214,10 +236,7 @@ async function downloadNseFile(
       if (!location || redirectCount === 3) {
         throw new AttachmentError(
           "Invalid or excessive attachment redirects.",
-          {
-            http_status: response.status,
-            redirect_count: redirectCount,
-          }
+          { http_status: response.status }
         );
       }
 
@@ -236,7 +255,6 @@ async function downloadNseFile(
         {
           http_status: response.status,
           content_type: response.headers.get("content-type"),
-          content_length_header: response.headers.get("content-length"),
         }
       );
     }
@@ -267,21 +285,39 @@ function isZip(buffer: Buffer): boolean {
   );
 }
 
-function extractPdfsFromZip(zip: Buffer): Buffer[] {
+function calculateCrc32(buffer: Buffer): number {
+  let crc = 0xffffffff;
+
+  for (const byte of buffer) {
+    crc ^= byte;
+
+    for (let i = 0; i < 8; i++) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function extractPdfsFromZip(zip: Buffer): ExtractedPdf[] {
   if (zip.length > MAX_DOWNLOAD_BYTES) {
-    throw new AttachmentError("ZIP exceeds the download size limit.", {
-      zip_size_bytes: zip.length,
-      download_limit_bytes: MAX_DOWNLOAD_BYTES,
-    });
+    throw new AttachmentError("ZIP exceeds the download size limit.");
   }
 
   let eocdOffset = -1;
   const minimumOffset = Math.max(0, zip.length - 65_557);
 
   for (let i = zip.length - 22; i >= minimumOffset; i--) {
-    if (zip.readUInt32LE(i) === 0x06054b50) {
-      eocdOffset = i;
-      break;
+    if (
+      i + 22 <= zip.length &&
+      zip.readUInt32LE(i) === 0x06054b50
+    ) {
+      const commentLength = zip.readUInt16LE(i + 20);
+
+      if (i + 22 + commentLength === zip.length) {
+        eocdOffset = i;
+        break;
+      }
     }
   }
 
@@ -307,26 +343,33 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
   }
 
   if (
+    totalEntries === 0xffff ||
+    centralSize === 0xffffffff ||
+    centralOffset === 0xffffffff
+  ) {
+    throw new AttachmentError("ZIP64 files are not supported.");
+  }
+
+  const centralEnd = centralOffset + centralSize;
+
+  if (
     totalEntries > MAX_ZIP_ENTRIES ||
-    centralOffset + centralSize > eocdOffset
+    centralEnd > eocdOffset ||
+    centralEnd < centralOffset
   ) {
     throw new AttachmentError(
       "ZIP structure exceeds safety limits.",
-      {
-        zip_entries: totalEntries,
-        max_entries: MAX_ZIP_ENTRIES,
-        central_directory_size: centralSize,
-      }
+      { zip_entries: totalEntries }
     );
   }
 
-  const pdfs: Buffer[] = [];
+  const pdfs: ExtractedPdf[] = [];
   let cursor = centralOffset;
   let totalUncompressed = 0;
 
   for (let entryIndex = 0; entryIndex < totalEntries; entryIndex++) {
     if (
-      cursor + 46 > zip.length ||
+      cursor + 46 > centralEnd ||
       zip.readUInt32LE(cursor) !== 0x02014b50
     ) {
       throw new AttachmentError(
@@ -334,7 +377,9 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
       );
     }
 
+    const flags = zip.readUInt16LE(cursor + 8);
     const method = zip.readUInt16LE(cursor + 10);
+    const crc = zip.readUInt32LE(cursor + 16);
     const compressedSize = zip.readUInt32LE(cursor + 20);
     const uncompressedSize = zip.readUInt32LE(cursor + 24);
     const fileNameLength = zip.readUInt16LE(cursor + 28);
@@ -345,9 +390,9 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
     const entryEnd =
       cursor + 46 + fileNameLength + extraLength + commentLength;
 
-    if (entryEnd > zip.length) {
+    if (entryEnd > centralEnd) {
       throw new AttachmentError(
-        "ZIP entry exceeds file boundaries."
+        "ZIP entry exceeds central directory boundaries."
       );
     }
 
@@ -363,22 +408,25 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
 
     if (pdfs.length >= MAX_PDFS_PER_ZIP) {
       throw new AttachmentError(
-        "ZIP contains too many PDF files.",
-        { max_pdfs: MAX_PDFS_PER_ZIP }
+        "ZIP contains too many PDF files."
+      );
+    }
+
+    if ((flags & 0x0001) !== 0) {
+      throw new AttachmentError(
+        "Encrypted ZIP entries are not supported.",
+        { file_name: fileName }
       );
     }
 
     if (
       uncompressedSize > MAX_PDF_BYTES ||
-      compressedSize > MAX_DOWNLOAD_BYTES
+      compressedSize > MAX_DOWNLOAD_BYTES ||
+      uncompressedSize === 0
     ) {
       throw new AttachmentError(
         "PDF inside ZIP exceeds the size limit.",
-        {
-          file_name: fileName,
-          compressed_size_bytes: compressedSize,
-          uncompressed_size_bytes: uncompressedSize,
-        }
+        { file_name: fileName }
       );
     }
 
@@ -403,22 +451,19 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
     if (method !== 0 && method !== 8) {
       throw new AttachmentError(
         "Unsupported ZIP compression method.",
-        {
-          file_name: fileName,
-          compression_method: method,
-        }
+        { file_name: fileName, compression_method: method }
       );
     }
 
     if (
-      localHeaderOffset + 30 > zip.length ||
+      localHeaderOffset + 30 > centralOffset ||
       zip.readUInt32LE(localHeaderOffset) !== 0x04034b50
     ) {
-      throw new AttachmentError(
-        "Invalid ZIP local file header."
-      );
+      throw new AttachmentError("Invalid ZIP local file header.");
     }
 
+    const localFlags = zip.readUInt16LE(localHeaderOffset + 6);
+    const localMethod = zip.readUInt16LE(localHeaderOffset + 8);
     const localNameLength = zip.readUInt16LE(
       localHeaderOffset + 26
     );
@@ -426,14 +471,34 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
       localHeaderOffset + 28
     );
 
-    const dataOffset =
-      localHeaderOffset + 30 + localNameLength + localExtraLength;
-
+    const localNameStart = localHeaderOffset + 30;
+    const localNameEnd = localNameStart + localNameLength;
+    const dataOffset = localNameEnd + localExtraLength;
     const dataEnd = dataOffset + compressedSize;
 
-    if (dataEnd > zip.length) {
+    if (
+      localNameEnd > centralOffset ||
+      dataOffset > centralOffset ||
+      dataEnd > centralOffset
+    ) {
       throw new AttachmentError(
-        "ZIP compressed data exceeds file boundaries."
+        "ZIP compressed data exceeds file boundaries.",
+        { file_name: fileName }
+      );
+    }
+
+    const localName = zip
+      .subarray(localNameStart, localNameEnd)
+      .toString("utf8");
+
+    if (
+      localName !== fileName ||
+      localMethod !== method ||
+      (localFlags & 0x0001) !== 0
+    ) {
+      throw new AttachmentError(
+        "ZIP local and central headers do not match.",
+        { file_name: fileName }
       );
     }
 
@@ -461,20 +526,26 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
 
     if (
       pdfBuffer.length !== uncompressedSize ||
+      calculateCrc32(pdfBuffer) !== crc ||
       !isPdf(pdfBuffer)
     ) {
       throw new AttachmentError(
-        "ZIP entry is not a valid PDF.",
+        "ZIP PDF integrity validation failed.",
         {
           file_name: fileName,
           extracted_size_bytes: pdfBuffer.length,
           expected_size_bytes: uncompressedSize,
-          ...getSignature(pdfBuffer),
         }
       );
     }
 
-    pdfs.push(pdfBuffer);
+    pdfs.push({ fileName, buffer: pdfBuffer });
+  }
+
+  if (cursor !== centralEnd) {
+    throw new AttachmentError(
+      "ZIP central directory size validation failed."
+    );
   }
 
   return pdfs;
@@ -483,27 +554,29 @@ function extractPdfsFromZip(zip: Buffer): Buffer[] {
 function normalizeText(value: string): string {
   return value
     .toLowerCase()
+    .replace(/&/g, "and")
     .replace(/[^a-z0-9]/g, "");
 }
 
-function classifyDocument(
-  text: string,
-  fallbackField: string
-): string {
+function classifyDocument(text: string): string {
   const value = text.toLowerCase();
 
   if (
-    /\budrhp\b|updated draft red herring prospectus/.test(value)
+    /\budrhp\b|updated\s+draft\s+red\s+herring\s+prospectus/.test(value)
   ) {
     return "UDRHP";
   }
 
-  if (/\brhp\b|red herring prospectus/.test(value)) {
-    return "RHP";
+  if (
+    /\bdrhp\b|draft\s+red\s+herring\s+prospectus/.test(value)
+  ) {
+    return "DRHP";
   }
 
-  if (/\bdrhp\b|draft red herring prospectus/.test(value)) {
-    return "DRHP";
+  if (
+    /\brhp\b|red\s+herring\s+prospectus/.test(value)
+  ) {
+    return "RHP";
   }
 
   if (/basis of allotment|allotment status/.test(value)) {
@@ -530,16 +603,10 @@ function classifyDocument(
     return "DRAFT_OFFER_DOCUMENT";
   }
 
-  return fallbackField || "UNCLASSIFIED";
+  return "UNCLASSIFIED";
 }
 
 function extractDocumentDate(text: string): string | null {
-  const patterns = [
-    /\b(\d{1,2})[\/.-](\d{1,2})[\/.-](20\d{2})\b/,
-    /\b(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d{2})\b/i,
-    /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(20\d{2})\b/i,
-  ];
-
   const monthMap: Record<string, string> = {
     january: "01",
     february: "02",
@@ -555,99 +622,116 @@ function extractDocumentDate(text: string): string | null {
     december: "12",
   };
 
+  const patterns = [
+    /\b(\d{1,2})[\/.-](\d{1,2})[\/.-](20\d{2})\b/,
+    /\b(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d{2})\b/i,
+    /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(20\d{2})\b/i,
+  ];
+
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (!match) continue;
 
-    let day: string;
-    let month: string;
-    let year: string;
+    let day: number;
+    let month: number;
+    let year: number;
 
     if (/^\d/.test(match[1])) {
-      day = match[1].padStart(2, "0");
+      day = Number(match[1]);
       month = /^\d/.test(match[2])
-        ? match[2].padStart(2, "0")
-        : monthMap[match[2].toLowerCase()];
-      year = match[3];
+        ? Number(match[2])
+        : Number(monthMap[match[2].toLowerCase()]);
+      year = Number(match[3]);
     } else {
-      month = monthMap[match[1].toLowerCase()];
-      day = match[2].padStart(2, "0");
-      year = match[3];
+      month = Number(monthMap[match[1].toLowerCase()]);
+      day = Number(match[2]);
+      year = Number(match[3]);
     }
 
-    const dayNumber = Number(day);
-    const monthNumber = Number(month);
+    const date = new Date(Date.UTC(year, month - 1, day));
 
     if (
-      dayNumber >= 1 &&
-      dayNumber <= 31 &&
-      monthNumber >= 1 &&
-      monthNumber <= 12
+      date.getUTCFullYear() === year &&
+      date.getUTCMonth() === month - 1 &&
+      date.getUTCDate() === day
     ) {
-      return `${year}-${month}-${day}`;
+      return [
+        String(year),
+        String(month).padStart(2, "0"),
+        String(day).padStart(2, "0"),
+      ].join("-");
     }
   }
 
   return null;
 }
 
+function assessTextQuality(text: string): ParsedDocument["extraction_quality"] {
+  if (!text || text.length < 80) {
+    return "ocr_required";
+  }
+
+  const replacementCharacters = (text.match(/\uFFFD/g) || []).length;
+  const controlCharacters = (text.match(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g) || []).length;
+
+  const badCharacterRatio =
+    (replacementCharacters + controlCharacters) / Math.max(text.length, 1);
+
+  if (badCharacterRatio > 0.01) {
+    return "ocr_required";
+  }
+
+  const readableCharacters = (text.match(/[a-zA-Z0-9]/g) || []).length;
+
+  if (readableCharacters / text.length < 0.2) {
+    return "low";
+  }
+
+  return "good";
+}
+
 async function parsePdf(
   buffer: Buffer,
   expectedIssuer: string | null,
-  fallbackField: string
+  attachmentName: string
 ): Promise<ParsedDocument> {
   if (buffer.length > MAX_PDF_BYTES) {
-    throw new AttachmentError(
-      "PDF exceeds the PDF size limit.",
-      {
-        pdf_size_bytes: buffer.length,
-        pdf_limit_bytes: MAX_PDF_BYTES,
-        ...getSignature(buffer),
-      }
-    );
+    throw new AttachmentError("PDF exceeds the PDF size limit.", {
+      pdf_size_bytes: buffer.length,
+      pdf_limit_bytes: MAX_PDF_BYTES,
+    });
   }
 
   if (!isPdf(buffer)) {
-    throw new AttachmentError(
-      "File is not a valid PDF.",
-      {
-        pdf_size_bytes: buffer.length,
-        ...getSignature(buffer),
-      }
-    );
+    throw new AttachmentError("File is not a valid PDF.", {
+      ...getSignature(buffer),
+    });
   }
 
-  let parsed: {
-    text?: string;
-    numpages?: number;
-  };
+  let parsed: { text?: string; numpages?: number };
 
   try {
     parsed = await pdfParse(buffer);
   } catch (error) {
-    throw new AttachmentError(
-      "PDF text extraction failed.",
-      {
-        pdf_size_bytes: buffer.length,
-        reason:
-          error instanceof Error
-            ? error.message
-            : "PDF parser error",
-      }
-    );
+    throw new AttachmentError("PDF text extraction failed.", {
+      pdf_size_bytes: buffer.length,
+      reason:
+        error instanceof Error ? error.message : "PDF parser error",
+    });
   }
 
   const text = (parsed.text || "")
     .replace(/\s+/g, " ")
     .trim();
 
-  const issuer = expectedIssuer?.trim() || null;
+  const quality = assessTextQuality(text);
+  const expected = expectedIssuer?.trim() || null;
 
   let identityStatus: ParsedDocument["identity_match_status"] =
     "unverified";
 
-  if (issuer && text) {
-    const normalizedIssuer = normalizeText(issuer);
+  if (expected && quality === "good") {
+    const normalizedIssuer = normalizeText(expected);
     const normalizedText = normalizeText(text);
 
     if (
@@ -661,10 +745,17 @@ async function parsePdf(
   }
 
   return {
-    document_type: classifyDocument(text, fallbackField),
-    extracted_date: extractDocumentDate(text),
-    issuer_name: issuer,
+    attachment_name: attachmentName,
+    document_type:
+      quality === "good"
+        ? classifyDocument(text)
+        : "UNCLASSIFIED",
+    extracted_date:
+      quality === "good" ? extractDocumentDate(text) : null,
+    expected_issuer_name: expected,
+    issuer_name: null,
     identity_match_status: identityStatus,
+    extraction_quality: quality,
     page_count: parsed.numpages ?? null,
     text_excerpt: text.slice(0, 1200),
   };
@@ -672,14 +763,14 @@ async function parsePdf(
 
 async function processAttachment(
   url: string,
-  expectedIssuer: string | null,
-  fallbackField: string
+  expectedIssuer: string | null
 ): Promise<{
   documents: ParsedDocument[];
   diagnostics: Diagnostics;
 }> {
   const downloaded = await downloadNseFile(url);
   const buffer = downloaded.buffer;
+  const originalName = getAttachmentName(url);
 
   const diagnostics: Diagnostics = {
     ...downloaded.diagnostics,
@@ -691,44 +782,17 @@ async function processAttachment(
   };
 
   if (isPdf(buffer)) {
-    try {
-      const document = await parsePdf(
-        buffer,
-        expectedIssuer,
-        fallbackField
-      );
+    const document = await parsePdf(
+      buffer,
+      expectedIssuer,
+      originalName
+    );
 
-      return {
-        documents: [document],
-        diagnostics,
-      };
-    } catch (error) {
-      if (error instanceof AttachmentError) {
-        throw new AttachmentError(error.message, {
-          ...diagnostics,
-          ...error.diagnostics,
-        });
-      }
-
-      throw error;
-    }
+    return { documents: [document], diagnostics };
   }
 
   if (isZip(buffer)) {
-    let pdfs: Buffer[];
-
-    try {
-      pdfs = extractPdfsFromZip(buffer);
-    } catch (error) {
-      if (error instanceof AttachmentError) {
-        throw new AttachmentError(error.message, {
-          ...diagnostics,
-          ...error.diagnostics,
-        });
-      }
-
-      throw error;
-    }
+    const pdfs = extractPdfsFromZip(buffer);
 
     if (pdfs.length === 0) {
       throw new AttachmentError(
@@ -741,7 +805,11 @@ async function processAttachment(
 
     for (const pdf of pdfs) {
       documents.push(
-        await parsePdf(pdf, expectedIssuer, fallbackField)
+        await parsePdf(
+          pdf.buffer,
+          expectedIssuer,
+          pdf.fileName
+        )
       );
     }
 
@@ -750,6 +818,7 @@ async function processAttachment(
       diagnostics: {
         ...diagnostics,
         extracted_pdf_count: pdfs.length,
+        extracted_pdf_names: pdfs.map((pdf) => pdf.fileName),
       },
     };
   }
@@ -770,14 +839,20 @@ export async function POST(request: NextRequest) {
     const requestHost = request.headers.get("host");
 
     if (origin && requestHost) {
-      const originHost = new URL(origin).host;
+      let originHost = "";
+
+      try {
+        originHost = new URL(origin).host;
+      } catch {
+        return NextResponse.json(
+          { success: false, error: "Invalid request origin." },
+          { status: 403 }
+        );
+      }
 
       if (originHost !== requestHost) {
         return NextResponse.json(
-          {
-            success: false,
-            error: "Invalid request origin.",
-          },
+          { success: false, error: "Invalid request origin." },
           { status: 403 }
         );
       }
@@ -792,10 +867,7 @@ export async function POST(request: NextRequest) {
 
     if (authError || !user) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "Authentication required.",
-        },
+        { success: false, error: "Authentication required." },
         { status: 401 }
       );
     }
@@ -852,12 +924,17 @@ export async function POST(request: NextRequest) {
 
     let processed = 0;
     let failed = 0;
+
     const skipped = eligibleRows.length - batch.length;
 
     const results: Array<{
       id: string;
+      company_name: string;
+      attachment_name: string;
+      field_name: string;
       status: string;
       message?: string;
+      error?: string;
     }> = [];
 
     for (const row of batch) {
@@ -867,17 +944,24 @@ export async function POST(request: NextRequest) {
         previousParse.attempt_count || 0
       );
 
+      const attachmentName = row.source_url
+        ? getAttachmentName(row.source_url)
+        : "Missing attachment URL";
+
+      const companyName = row.issuer_name || "Issuer not available";
+
       try {
         if (!row.source_url) {
-          throw new AttachmentError(
-            "Attachment URL is missing."
-          );
+          throw new AttachmentError("Attachment URL is missing.");
         }
 
         const parsed = await processAttachment(
           row.source_url,
-          row.issuer_name || null,
-          row.field_name || "unknown"
+          row.issuer_name || null
+        );
+
+        const hasOcrRequired = parsed.documents.some(
+          (doc) => doc.extraction_quality === "ocr_required"
         );
 
         const newMetadata = {
@@ -888,6 +972,7 @@ export async function POST(request: NextRequest) {
             attempt_count: previousAttempts + 1,
             documents: parsed.documents,
             diagnostics: parsed.diagnostics,
+            review_status: "pending_manual_review",
             notice:
               "Machine extraction only. Evidence remains unverified pending manual validation.",
           },
@@ -908,8 +993,13 @@ export async function POST(request: NextRequest) {
 
         results.push({
           id: row.id,
+          company_name: companyName,
+          attachment_name: attachmentName,
+          field_name: row.field_name || attachmentName,
           status: "completed",
-          message: `${parsed.documents.length} PDF document(s) extracted.`,
+          message: hasOcrRequired
+            ? `${parsed.documents.length} PDF(s) extracted; OCR/manual review required.`
+            : `${parsed.documents.length} PDF document(s) extracted.`,
         });
       } catch (error) {
         const attemptCount = previousAttempts + 1;
@@ -928,13 +1018,12 @@ export async function POST(request: NextRequest) {
         const failureMetadata = {
           ...metadata,
           document_parse: {
-            status: permanent
-              ? "failed_permanent"
-              : "failed",
+            status: permanent ? "failed_permanent" : "failed",
             processed_at: new Date().toISOString(),
             attempt_count: attemptCount,
             error: message,
             diagnostics,
+            review_status: "pending_manual_review",
             notice: permanent
               ? "Automatic retry limit reached. Manual review required."
               : "This attachment may be retried in a later manual run.",
@@ -948,14 +1037,18 @@ export async function POST(request: NextRequest) {
 
         failed++;
 
+        const finalMessage = updateError
+          ? `${message}; metadata update failed: ${updateError.message}`
+          : message;
+
         results.push({
           id: row.id,
-          status: permanent
-            ? "failed_permanent"
-            : "failed",
-          message: updateError
-            ? `${message}; metadata update failed: ${updateError.message}`
-            : message,
+          company_name: companyName,
+          attachment_name: attachmentName,
+          field_name: row.field_name || attachmentName,
+          status: permanent ? "failed_permanent" : "failed",
+          message: finalMessage,
+          error: finalMessage,
         });
       }
     }
@@ -969,10 +1062,7 @@ export async function POST(request: NextRequest) {
 
     await supabaseAdmin.from("automation_logs").insert({
       task_name: "nse_attachment_parse",
-      status:
-        failed > 0
-          ? "partial_success"
-          : "success",
+      status: failed > 0 ? "partial_success" : "success",
       message: JSON.stringify(summary),
     });
 
@@ -999,10 +1089,7 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json(
-      {
-        success: false,
-        error: message,
-      },
+      { success: false, error: message },
       { status: 500 }
     );
   }

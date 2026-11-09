@@ -6,13 +6,16 @@ type ParserResult = {
   success?: boolean;
   processed?: number;
   failed?: number;
-  batch_size?: number;
+  skipped?: number;
   message?: string;
   error?: string;
   results?: {
     id: string;
-    field_name: string | null;
+    company_name: string;
+    attachment_name: string;
+    field_name: string;
     status: string;
+    message?: string;
     error?: string;
   }[];
 };
@@ -37,7 +40,15 @@ export default function NseAttachmentParserButton() {
         }
       );
 
-      const data = (await response.json()) as ParserResult;
+      let data: ParserResult;
+
+      try {
+        data = (await response.json()) as ParserResult;
+      } catch {
+        throw new Error(
+          `Server returned an invalid response (HTTP ${response.status}).`
+        );
+      }
 
       if (!response.ok) {
         throw new Error(
@@ -65,7 +76,7 @@ export default function NseAttachmentParserButton() {
         NSE DOCUMENT INTELLIGENCE
       </p>
 
-      <h2 className="mt-2 text-xl font-bold">
+      <h2 className="mt-2 text-xl font-bold text-white">
         NSE Attachment Parser
       </h2>
 
@@ -80,7 +91,9 @@ export default function NseAttachmentParserButton() {
         disabled={loading}
         className="mt-5 rounded-lg bg-emerald-500 px-5 py-3 text-sm font-bold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {loading ? "Parsing Attachments..." : "Run NSE Attachment Parser"}
+        {loading
+          ? "Parsing Attachments..."
+          : "Run NSE Attachment Parser"}
       </button>
 
       {result && (
@@ -95,18 +108,25 @@ export default function NseAttachmentParserButton() {
                 Parser Response
               </p>
 
-              <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+              <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
                 <div>
                   <p className="text-slate-400">Processed</p>
-                  <p className="text-xl font-bold">
+                  <p className="text-xl font-bold text-emerald-400">
                     {result.processed ?? 0}
                   </p>
                 </div>
 
                 <div>
                   <p className="text-slate-400">Failed</p>
-                  <p className="text-xl font-bold">
+                  <p className="text-xl font-bold text-red-400">
                     {result.failed ?? 0}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-slate-400">Skipped</p>
+                  <p className="text-xl font-bold text-amber-400">
+                    {result.skipped ?? 0}
                   </p>
                 </div>
               </div>
@@ -118,27 +138,44 @@ export default function NseAttachmentParserButton() {
               {result.results?.map((item) => (
                 <div
                   key={item.id}
-                  className="mt-3 border-t border-slate-800 pt-3 text-xs"
+                  className="mt-4 rounded-lg border border-slate-800 p-3 text-xs"
                 >
-                  <p className="break-all text-slate-300">
-                    {item.field_name || "Unknown attachment"}
+                  <p className="font-semibold text-white">
+                    {item.company_name || "Issuer not available"}
                   </p>
+
+                  <p className="mt-2 break-all text-slate-300">
+                    Attachment:{" "}
+                    {item.attachment_name || "Unknown attachment"}
+                  </p>
+
+                  <p className="mt-1 break-all text-slate-400">
+                    Field: {item.field_name || "Not available"}
+                  </p>
+
                   <p
                     className={
                       item.status === "completed"
-                        ? "mt-1 text-emerald-400"
-                        : "mt-1 text-red-400"
+                        ? "mt-2 font-semibold text-emerald-400"
+                        : "mt-2 font-semibold text-red-400"
                     }
                   >
-                    {item.status}
+                    Status: {item.status}
                   </p>
-                  {item.error && (
-                    <p className="mt-1 text-red-400">
-                      {item.error}
+
+                  {(item.error || item.message) && (
+                    <p className="mt-2 break-words text-amber-400">
+                      {item.error || item.message}
                     </p>
                   )}
                 </div>
               ))}
+
+              {(!result.results || result.results.length === 0) && (
+                <p className="mt-4 text-sm text-slate-400">
+                  No attachments were processed in this batch.
+                </p>
+              )}
             </>
           )}
 

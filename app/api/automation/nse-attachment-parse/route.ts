@@ -1,4 +1,3 @@
-
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -15,14 +14,14 @@ export const dynamic = "force-dynamic";
 
 const NSE_HOST = "nsearchives.nseindia.com";
 
-const MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024;
-const MAX_PDF_BYTES = 5 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_PDF_BYTES = 10 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 30;
-const MAX_ZIP_UNCOMPRESSED_BYTES = 15 * 1024 * 1024;
+const MAX_ZIP_UNCOMPRESSED_BYTES = 30 * 1024 * 1024;
 const MAX_PDFS_PER_ZIP = 5;
-const BATCH_SIZE = 5;
+const BATCH_SIZE = 3;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 5;
 
 type Diagnostics = Record<string, unknown>;
 
@@ -77,7 +76,6 @@ function getAttachmentName(value: string): string {
   try {
     const url = new URL(value);
     const rawName = url.pathname.split("/").pop() || "attachment";
-
     return decodeURIComponent(rawName).slice(0, 250);
   } catch {
     return "attachment";
@@ -218,7 +216,7 @@ async function downloadNseFile(
         headers: {
           Accept:
             "application/pdf, application/zip, application/octet-stream",
-          "User-Agent": "Capital360IPO-DocumentParser/1.0",
+          "User-Agent": "Capital360IPO-DocumentParser/2.0",
         },
       });
     } catch (error) {
@@ -357,10 +355,9 @@ function extractPdfsFromZip(zip: Buffer): ExtractedPdf[] {
     centralEnd > eocdOffset ||
     centralEnd < centralOffset
   ) {
-    throw new AttachmentError(
-      "ZIP structure exceeds safety limits.",
-      { zip_entries: totalEntries }
-    );
+    throw new AttachmentError("ZIP structure exceeds safety limits.", {
+      zip_entries: totalEntries,
+    });
   }
 
   const pdfs: ExtractedPdf[] = [];
@@ -407,9 +404,7 @@ function extractPdfsFromZip(zip: Buffer): ExtractedPdf[] {
     }
 
     if (pdfs.length >= MAX_PDFS_PER_ZIP) {
-      throw new AttachmentError(
-        "ZIP contains too many PDF files."
-      );
+      throw new AttachmentError("ZIP contains too many PDF files.");
     }
 
     if ((flags & 0x0001) !== 0) {
@@ -464,12 +459,8 @@ function extractPdfsFromZip(zip: Buffer): ExtractedPdf[] {
 
     const localFlags = zip.readUInt16LE(localHeaderOffset + 6);
     const localMethod = zip.readUInt16LE(localHeaderOffset + 8);
-    const localNameLength = zip.readUInt16LE(
-      localHeaderOffset + 26
-    );
-    const localExtraLength = zip.readUInt16LE(
-      localHeaderOffset + 28
-    );
+    const localNameLength = zip.readUInt16LE(localHeaderOffset + 26);
+    const localExtraLength = zip.readUInt16LE(localHeaderOffset + 28);
 
     const localNameStart = localHeaderOffset + 30;
     const localNameEnd = localNameStart + localNameLength;
@@ -503,7 +494,6 @@ function extractPdfsFromZip(zip: Buffer): ExtractedPdf[] {
     }
 
     const compressedData = zip.subarray(dataOffset, dataEnd);
-
     let pdfBuffer: Buffer;
 
     try {
@@ -666,16 +656,21 @@ function extractDocumentDate(text: string): string | null {
   return null;
 }
 
-function assessTextQuality(text: string): ParsedDocument["extraction_quality"] {
+function assessTextQuality(
+  text: string
+): ParsedDocument["extraction_quality"] {
   if (!text || text.length < 80) {
     return "ocr_required";
   }
 
   const replacementCharacters = (text.match(/\uFFFD/g) || []).length;
-  const controlCharacters = (text.match(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g) || []).length;
+  const controlCharacters = (
+    text.match(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g) || []
+  ).length;
 
   const badCharacterRatio =
-    (replacementCharacters + controlCharacters) / Math.max(text.length, 1);
+    (replacementCharacters + controlCharacters) /
+    Math.max(text.length, 1);
 
   if (badCharacterRatio > 0.01) {
     return "ocr_required";
@@ -720,10 +715,7 @@ async function parsePdf(
     });
   }
 
-  const text = (parsed.text || "")
-    .replace(/\s+/g, " ")
-    .trim();
-
+  const text = (parsed.text || "").replace(/\s+/g, " ").trim();
   const quality = assessTextQuality(text);
   const expected = expectedIssuer?.trim() || null;
 
@@ -734,22 +726,17 @@ async function parsePdf(
     const normalizedIssuer = normalizeText(expected);
     const normalizedText = normalizeText(text);
 
-    if (
+    identityStatus =
       normalizedIssuer.length >= 5 &&
       normalizedText.includes(normalizedIssuer)
-    ) {
-      identityStatus = "matched";
-    } else {
-      identityStatus = "ambiguous";
-    }
+        ? "matched"
+        : "ambiguous";
   }
 
   return {
     attachment_name: attachmentName,
     document_type:
-      quality === "good"
-        ? classifyDocument(text)
-        : "UNCLASSIFIED",
+      quality === "good" ? classifyDocument(text) : "UNCLASSIFIED",
     extracted_date:
       quality === "good" ? extractDocumentDate(text) : null,
     expected_issuer_name: expected,
@@ -805,11 +792,7 @@ async function processAttachment(
 
     for (const pdf of pdfs) {
       documents.push(
-        await parsePdf(
-          pdf.buffer,
-          expectedIssuer,
-          pdf.fileName
-        )
+        await parsePdf(pdf.buffer, expectedIssuer, pdf.fileName)
       );
     }
 
@@ -830,6 +813,17 @@ async function processAttachment(
       downloaded_bytes: buffer.length,
       ...getSignature(buffer),
     }
+  );
+}
+
+function isRetryableSizeFailure(parseInfo: any): boolean {
+  const error = String(parseInfo.error || "").toLowerCase();
+
+  return (
+    error.includes("attachment exceeds the download size limit") ||
+    error.includes("pdf exceeds the pdf size limit") ||
+    error.includes("pdf inside zip exceeds the size limit") ||
+    error.includes("zip total uncompressed size exceeds the limit")
   );
 }
 
@@ -904,28 +898,35 @@ export async function POST(request: NextRequest) {
       .limit(100);
 
     if (queryError) {
-      throw new Error(
-        `Evidence query failed: ${queryError.message}`
-      );
+      throw new Error(`Evidence query failed: ${queryError.message}`);
     }
 
     const eligibleRows = (rows || []).filter((row: any) => {
       const metadata = row.metadata || {};
       const parseInfo = metadata.document_parse || {};
+      const status = parseInfo.status;
+      const attempts = Number(parseInfo.attempt_count || 0);
 
-      return (
-        metadata.superseded !== true &&
-        parseInfo.status !== "completed" &&
-        parseInfo.status !== "failed_permanent"
-      );
+      if (metadata.superseded === true) return false;
+      if (status === "completed") return false;
+      if (attempts >= MAX_ATTEMPTS) return false;
+
+      if (status === "failed_permanent") {
+        return isRetryableSizeFailure(parseInfo);
+      }
+
+      if (status === "failed") {
+        return true;
+      }
+
+      return true;
     });
 
     const batch = eligibleRows.slice(0, BATCH_SIZE);
+    const skipped = eligibleRows.length - batch.length;
 
     let processed = 0;
     let failed = 0;
-
-    const skipped = eligibleRows.length - batch.length;
 
     const results: Array<{
       id: string;

@@ -2,8 +2,8 @@ import "server-only";
 
 import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { requireApiRole } from "@/lib/require-api-role";
 import { runIpoMatching } from "@/lib/run-ipo-matching";
 
 export const runtime = "nodejs";
@@ -42,9 +42,19 @@ function parseDate(value: string): string | null {
 
     const date = new Date(match[0]);
 
-    if (!Number.isNaN(date.getTime())) {
-      return date.toISOString().slice(0, 10);
+    if (Number.isNaN(date.getTime())) continue;
+
+    const isoDate = date.toISOString().slice(0, 10);
+
+    // Reject impossible calendar dates.
+    if (
+      /^\d{4}-\d{2}-\d{2}$/.test(match[0]) &&
+      isoDate !== match[0]
+    ) {
+      continue;
     }
+
+    return isoDate;
   }
 
   return null;
@@ -79,20 +89,35 @@ function isValidFilingTitle(title: string): boolean {
   return true;
 }
 
+function isValidSebiUrl(url: URL): boolean {
+  return (
+    url.protocol === "https:" &&
+    SEBI_HOSTS.includes(url.hostname) &&
+    !url.username &&
+    !url.password &&
+    !url.port &&
+    url.pathname.startsWith("/filings/public-issues/")
+  );
+}
+
 async function writeLog(
+  taskName: string,
   status: "success" | "failed",
   message: string
 ) {
   const { error } = await supabaseAdmin
     .from("automation_logs")
     .insert({
-      task_name: "SEBI IPO DRHP Collection",
+      task_name: taskName,
       status,
       message: message.slice(0, 500),
     });
 
   if (error) {
-    console.error("Automation log insert failed:", error.message);
+    console.error(
+      `Automation log failed (${taskName}):`,
+      error.message
+    );
   }
 }
 
@@ -101,6 +126,7 @@ async function collectIpos() {
     const response = await fetch(SEBI_URL, {
       method: "GET",
       cache: "no-store",
+      redirect: "error",
       signal: AbortSignal.timeout(20000),
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; Capital360IPO/1.0)",
@@ -161,15 +187,7 @@ async function collectIpos() {
           continue;
         }
 
-        if (!SEBI_HOSTS.includes(sourceUrl.hostname)) continue;
-
-        if (
-          !sourceUrl.pathname.startsWith(
-            "/filings/public-issues/"
-          )
-        ) {
-          continue;
-        }
+        if (!isValidSebiUrl(sourceUrl)) continue;
 
         filings.set(sourceUrl.href, {
           companyName,
@@ -250,10 +268,6 @@ async function collectIpos() {
         queueId = newQueueRecord.id;
       }
 
-      // Store official listing evidence.
-      // This proves the filing was listed at the SEBI URL,
-      // not that every document detail has been independently verified.
-
       const evidenceHash = createHash("sha256")
         .update(
           [
@@ -312,6 +326,7 @@ async function collectIpos() {
       `Duplicates: ${duplicates}, Evidence inserted: ${evidenceInserted}, ` +
       `Evidence duplicates: ${evidenceDuplicates}`;
 
+    // Matching is a separate read-only dry run.
     let matchingResult = null;
     let matchingError: string | null = null;
 
@@ -323,38 +338,48 @@ async function collectIpos() {
           ? error.message
           : "Unknown matching error";
 
-      console.error(
-        "Automatic IPO matching failed:",
-        matchingError
-      );
+      console.error("IPO matching dry run failed:", matchingError);
 
       await writeLog(
+        "SEBI IPO Matching Dry Run",
         "failed",
-        `Automatic matching failed: ${matchingError}`
+        matchingError
       );
     }
 
+    // Collection success is logged independently of matching.
     await writeLog(
+      "SEBI IPO DRHP Collection",
       "success",
-      `${collectionMessage}. Matching: ${
-        matchingError ? "failed" : "completed"
-      }.`
+      collectionMessage
     );
+
+    const matchingStatus = matchingError
+      ? "failed"
+      : "completed";
 
     return NextResponse.json(
       {
         success: true,
-        source: "SEBI",
-        detected,
-        inserted,
-        duplicates,
-        evidenceInserted,
-        evidenceDuplicates,
-        matching: matchingResult,
-        matchingError,
+        status: matchingError ? "partial_success" : "success",
+        collection: {
+          success: true,
+          detected,
+          inserted,
+          duplicates,
+          evidenceInserted,
+          evidenceDuplicates,
+          message: collectionMessage,
+        },
+        matching: {
+          success: !matchingError,
+          status: matchingStatus,
+          mode: "dry_run",
+          result: matchingResult,
+          error: matchingError,
+        },
         review_status: "pending",
         evidence_status: "unverified",
-        message: collectionMessage,
       },
       {
         headers: { "Cache-Control": "no-store" },
@@ -368,11 +393,16 @@ async function collectIpos() {
 
     console.error("IPO collection failed:", message);
 
-    await writeLog("failed", message);
+    await writeLog(
+      "SEBI IPO DRHP Collection",
+      "failed",
+      message
+    );
 
     return NextResponse.json(
       {
         success: false,
+        status: "failed",
         error: "IPO collection failed. Check server logs.",
       },
       {
@@ -388,55 +418,33 @@ export async function POST(request: NextRequest) {
   try {
     const origin = request.headers.get("origin");
 
-    if (origin && origin !== request.nextUrl.origin) {
+    // Browser manual requests must include the exact same origin.
+    if (!origin || origin !== request.nextUrl.origin) {
       return NextResponse.json(
-        { error: "Invalid request origin." },
-        { status: 403 }
+        { success: false, error: "Invalid request origin." },
+        { status: 403, headers: { "Cache-Control": "no-store" } }
       );
     }
 
-    const supabase = await createSupabaseServerClient();
+    const auth = await requireApiRole(["owner", "admin"]);
 
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: "Authentication required." },
-        { status: 401 }
-      );
-    }
-
-    const { data: profile, error: profileError } =
-      await supabase
-        .from("profiles")
-        .select("role")
-        .eq("id", user.id)
-        .maybeSingle();
-
-    if (
-      profileError ||
-      !profile ||
-      !["owner", "admin"].includes(profile.role)
-    ) {
-      return NextResponse.json(
-        { error: "Owner/Admin access required." },
-        { status: 403 }
-      );
+    if (!auth.authorized) {
+      return auth.response;
     }
 
     return await collectIpos();
   } catch (error) {
-    console.error(
-      "Manual IPO collection authorization failed:",
-      error
-    );
+    console.error("Manual IPO collection authorization failed:", error);
 
     return NextResponse.json(
-      { error: "Unable to authorize collection request." },
-      { status: 500 }
+      {
+        success: false,
+        error: "Unable to authorize collection request.",
+      },
+      {
+        status: 500,
+        headers: { "Cache-Control": "no-store" },
+      }
     );
   }
 }
@@ -450,8 +458,11 @@ export async function GET(request: NextRequest) {
     request.headers.get("authorization") !== `Bearer ${cronSecret}`
   ) {
     return NextResponse.json(
-      { error: "Unauthorized cron request." },
-      { status: 401 }
+      { success: false, error: "Unauthorized cron request." },
+      {
+        status: 401,
+        headers: { "Cache-Control": "no-store" },
+      }
     );
   }
 

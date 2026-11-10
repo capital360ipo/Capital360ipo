@@ -6,31 +6,11 @@
  */
 
 const GENERIC_WORDS = new Set([
-  "private",
-  "limited",
-  "ltd",
-  "pvt",
-  "incorporated",
-  "inc",
-  "corporation",
-  "corp",
-  "company",
-  "co",
-  "india",
-  "indian",
-  "industries",
-  "industry",
-  "technology",
-  "technologies",
-  "solutions",
-  "services",
-  "international",
-  "global",
-  "ventures",
-  "enterprise",
-  "enterprises",
-  "holdings",
-  "group",
+  "private", "limited", "ltd", "pvt", "incorporated", "inc",
+  "corporation", "corp", "company", "co", "india", "indian",
+  "industries", "industry", "technology", "technologies",
+  "solutions", "services", "international", "global", "ventures",
+  "enterprise", "enterprises", "holdings", "group",
 ]);
 
 export function normalizeCompanyName(name: string): string {
@@ -50,8 +30,7 @@ function getDistinctiveWords(name: string): Set<string> {
     normalizeCompanyName(name)
       .split(" ")
       .filter(
-        (word) =>
-          word.length >= 3 && !GENERIC_WORDS.has(word)
+        (word) => word.length >= 3 && !GENERIC_WORDS.has(word)
       )
   );
 }
@@ -65,12 +44,13 @@ export function calculateCompanyNameSimilarity(
 
   if (!first || !second) return 0;
 
-  if (first === second) return 100;
-
   const firstWords = getDistinctiveWords(first);
   const secondWords = getDistinctiveWords(second);
 
+  // Generic-only names cannot produce a match.
   if (!firstWords.size || !secondWords.size) return 0;
+
+  if (first === second) return 100;
 
   const commonWords = [...firstWords].filter((word) =>
     secondWords.has(word)
@@ -94,16 +74,13 @@ export function isStrongCompanyNameMatch(
 
   if (!first || !second) return false;
 
-  // Exact normalized names are a strong signal,
-  // but still require independent official verification.
-  if (first === second) return true;
-
   const firstWords = getDistinctiveWords(first);
   const secondWords = getDistinctiveWords(second);
 
   if (!firstWords.size || !secondWords.size) return false;
 
-  // Generic-word-only matches are never accepted.
+  if (first === second) return true;
+
   const commonWords = [...firstWords].filter((word) =>
     secondWords.has(word)
   );

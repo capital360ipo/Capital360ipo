@@ -10,31 +10,16 @@ import {
 const PAGE_SIZE = 500;
 const MAX_RECORDS = 5000;
 const MAX_COMPARISONS = 500000;
-const UPDATE_CONCURRENCY = 10;
+const MAX_SAMPLE_PAIRS = 100;
 
 const GENERIC_WORDS = new Set([
-  "india",
-  "indian",
-  "industries",
-  "industry",
-  "technology",
-  "technologies",
-  "services",
-  "solutions",
-  "global",
-  "international",
-  "limited",
-  "ltd",
-  "private",
-  "pvt",
-  "company",
-  "corporation",
-  "corporate",
-  "group",
-  "holdings",
-  "holding",
-  "enterprises",
-  "enterprise",
+  "india", "indian", "industries", "industry",
+  "technology", "technologies", "services",
+  "solutions", "global", "international",
+  "limited", "ltd", "private", "pvt",
+  "company", "corporation", "corporate",
+  "group", "holdings", "holding",
+  "enterprises", "enterprise",
 ]);
 
 type QueueRecord = {
@@ -42,15 +27,23 @@ type QueueRecord = {
   source_name: string;
   company_name: string;
   ipo_type: string | null;
-  normalized_company_name: string | null;
-  name_similarity_score: number | null;
+};
+
+type MatchPair = {
+  first_id: string;
+  first_company: string;
+  first_source: string;
+  second_id: string;
+  second_company: string;
+  second_source: string;
+  similarity_score: number;
+  issue_type: string | null;
 };
 
 function getMatchTokens(name: string): Set<string> {
   return new Set(
     name
       .split(/\s+/)
-      .map((word) => word.trim())
       .filter(
         (word) =>
           word.length >= 3 &&
@@ -67,13 +60,11 @@ export async function runIpoMatching() {
   const records: QueueRecord[] = [];
   let offset = 0;
 
-  // Read queue in stable, bounded pages.
+  // READ ONLY: fetch records from the import queue.
   while (true) {
     const { data, error } = await supabaseAdmin
       .from("ipo_import_queue")
-      .select(
-        "id, source_name, company_name, ipo_type, normalized_company_name, name_similarity_score"
-      )
+      .select("id, source_name, company_name, ipo_type")
       .order("id", { ascending: true })
       .range(offset, offset + PAGE_SIZE - 1);
 
@@ -107,7 +98,6 @@ export async function runIpoMatching() {
     };
   });
 
-  // Build token index to avoid comparing every possible pair.
   const tokenIndex = new Map<string, number[]>();
 
   for (let i = 0; i < prepared.length; i++) {
@@ -119,8 +109,9 @@ export async function runIpoMatching() {
   }
 
   const bestScores = new Map<string, number>();
-  const candidatePairs = new Set<string>();
+  const samplePairs: MatchPair[] = [];
 
+  let candidatePairs = 0;
   let typeMismatchPairs = 0;
   let comparisons = 0;
 
@@ -148,7 +139,7 @@ export async function runIpoMatching() {
 
       if (comparisons > MAX_COMPARISONS) {
         throw new Error(
-          "IPO matching exceeded its safe comparison limit. No metadata updates were performed."
+          "Dry run exceeded its safe comparison limit."
         );
       }
 
@@ -191,9 +182,7 @@ export async function runIpoMatching() {
         second.company_name
       );
 
-      candidatePairs.add(
-        [first.id, second.id].sort().join(":")
-      );
+      candidatePairs++;
 
       bestScores.set(
         first.id,
@@ -204,81 +193,36 @@ export async function runIpoMatching() {
         second.id,
         Math.max(bestScores.get(second.id) || 0, score)
       );
+
+      if (samplePairs.length < MAX_SAMPLE_PAIRS) {
+        samplePairs.push({
+          first_id: first.id,
+          first_company: first.company_name,
+          first_source: first.source_name,
+          second_id: second.id,
+          second_company: second.company_name,
+          second_source: second.source_name,
+          similarity_score: score,
+          issue_type: first.ipo_type || second.ipo_type,
+        });
+      }
     }
   }
 
-  // Prepare metadata updates only when values have changed.
-  const updates = prepared.filter((record) => {
-    const nextScore = bestScores.get(record.id) ?? null;
-
-    return (
-      record.normalized !== record.normalized_company_name ||
-      nextScore !== record.name_similarity_score
-    );
-  });
-
-  // Controlled concurrency avoids thousands of simultaneous requests.
-  for (
-    let i = 0;
-    i < updates.length;
-    i += UPDATE_CONCURRENCY
-  ) {
-    const batch = updates.slice(
-      i,
-      i + UPDATE_CONCURRENCY
-    );
-
-    const results = await Promise.all(
-      batch.map((record) =>
-        supabaseAdmin
-          .from("ipo_import_queue")
-          .update({
-            normalized_company_name: record.normalized,
-            name_similarity_score:
-              bestScores.get(record.id) ?? null,
-          })
-          .eq("id", record.id)
-      )
-    );
-
-    if (results.some((result) => result.error)) {
-      throw new Error(
-        "IPO matching metadata update failed."
-      );
-    }
-  }
-
-  const result = {
+  // No database writes are performed in this function.
+  return {
+    mode: "dry_run",
+    readOnly: true,
+    databaseWrites: 0,
     processed: records.length,
     comparisons,
-    updated: updates.length,
-    candidatePairs: candidatePairs.size,
+    candidatePairs,
     recordsWithCandidates: bestScores.size,
     typeMismatchPairs,
+    samplePairs,
+    samplePairsLimit: MAX_SAMPLE_PAIRS,
     verified: 0,
+    linked: 0,
     published: 0,
   };
-
-  const { error: logError } = await supabaseAdmin
-    .from("automation_logs")
-    .insert({
-      task_name: "ipo_matching",
-      status: "success",
-      message:
-        `Processed ${result.processed}; ` +
-        `comparisons ${result.comparisons}; ` +
-        `updated ${result.updated}; ` +
-        `candidate pairs ${result.candidatePairs}; ` +
-        `candidate records ${result.recordsWithCandidates}; ` +
-        `type mismatches ${result.typeMismatchPairs}. ` +
-        "Name matching only; no identity verification, candidate linking or publication performed.",
-    });
-
-  if (logError) {
-    throw new Error(
-      "IPO matching audit log could not be saved."
-    );
-  }
-
-  return result;
 }

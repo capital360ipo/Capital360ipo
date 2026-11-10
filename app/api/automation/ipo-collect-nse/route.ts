@@ -1,17 +1,18 @@
 import "server-only";
 
 import { createHash } from "crypto";
-import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { requireApiRole } from "@/lib/require-api-role";
+import { runIpoMatching } from "@/lib/run-ipo-matching";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const NSE_URL =
-"https://www.nseindia.com/companies-listing/corporate-public-issue-advertisements";
+  "https://www.nseindia.com/companies-listing/corporate-public-issue-advertisements";
 
-const NSE_HOSTS = ["www.nseindia.com", "nseindia.com"];
+const NSE_HOSTS = new Set(["www.nseindia.com", "nseindia.com"]);
 
 const HEADERS = {
   "User-Agent":
@@ -20,6 +21,13 @@ const HEADERS = {
   "Accept-Language": "en-US,en;q=0.9",
   Referer: "https://www.nseindia.com/",
 };
+
+function jsonResponse(body: unknown, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
 
 function cleanText(value: string): string {
   return value
@@ -34,32 +42,39 @@ function cleanText(value: string): string {
     .trim();
 }
 
+function validDate(year: number, month: number, day: number): boolean {
+  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1) {
+    return false;
+  }
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
 function parseNseDate(value: string): string | null {
-  const months: Record<string, string> = {
-    jan: "01",
-    feb: "02",
-    mar: "03",
-    apr: "04",
-    may: "05",
-    jun: "06",
-    jul: "07",
-    aug: "08",
-    sep: "09",
-    oct: "10",
-    nov: "11",
-    dec: "12",
+  const months: Record<string, number> = {
+    jan: 1, feb: 2, mar: 3, apr: 4,
+    may: 5, jun: 6, jul: 7, aug: 8,
+    sep: 9, oct: 10, nov: 11, dec: 12,
   };
 
-  const numeric = value.match(/\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b/);
+  const numeric = value.match(
+    /\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b/
+  );
 
   if (numeric) {
     const day = Number(numeric[1]);
     const month = Number(numeric[2]);
     const year = Number(numeric[3]);
 
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    }
+    if (!validDate(year, month, day)) return null;
+
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   }
 
   const named = value.match(
@@ -67,11 +82,36 @@ function parseNseDate(value: string): string | null {
   );
 
   if (named) {
+    const day = Number(named[1]);
     const month = months[named[2].slice(0, 3).toLowerCase()];
-    return `${named[3]}-${month}-${String(Number(named[1])).padStart(2, "0")}`;
+    const year = Number(named[3]);
+
+    if (!validDate(year, month, day)) return null;
+
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   }
 
   return null;
+}
+
+function getNseSourceUrl(href: string): string {
+  try {
+    const url = new URL(href, NSE_URL);
+
+    if (
+      url.protocol !== "https:" ||
+      !NSE_HOSTS.has(url.hostname) ||
+      url.username ||
+      url.password ||
+      url.port
+    ) {
+      return NSE_URL;
+    }
+
+    return url.href;
+  } catch {
+    return NSE_URL;
+  }
 }
 
 async function writeLog(
@@ -91,148 +131,110 @@ async function writeLog(
   }
 }
 
-export async function POST() {
-  try {
-    const supabase = await createSupabaseServerClient();
+async function collectIpos() {
+  const response = await fetch(NSE_URL, {
+    method: "GET",
+    cache: "no-store",
+    redirect: "error",
+    signal: AbortSignal.timeout(25000),
+    headers: HEADERS,
+  });
 
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
+  if (!response.ok) {
+    throw new Error(`NSE returned HTTP ${response.status}`);
+  }
 
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: "Authentication required." },
-        { status: 401 }
-      );
+  const html = await response.text();
+
+  if (!html || html.length < 500) {
+    throw new Error("NSE returned an empty or incomplete page.");
+  }
+
+  const rows = html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+
+  const filings = new Map<
+    string,
+    {
+      companyName: string;
+      ipoType: string | null;
+      filingDate: string;
+      sourceUrl: string;
+      boardType: string;
     }
+  >();
 
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .maybeSingle();
+  for (const row of rows) {
+    const cells = [
+      ...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi),
+    ].map((cell) => cleanText(cell[1]));
+
+    if (cells.length < 4) continue;
+
+    const companyName = cells[0];
+    const issueType = cells[1].toLowerCase();
+    const board = cells[2].toLowerCase();
+    const filingDate = parseNseDate(cells[3]);
 
     if (
-      profileError ||
-      !profile ||
-      !["owner", "admin"].includes(profile.role)
+      !companyName ||
+      companyName.length < 3 ||
+      !issueType.includes("ipo") ||
+      !filingDate
     ) {
-      return NextResponse.json(
-        { error: "Owner/Admin access required." },
-        { status: 403 }
-      );
+      continue;
     }
 
-    const response = await fetch(NSE_URL, {
-      method: "GET",
-      cache: "no-store",
-      signal: AbortSignal.timeout(25000),
-      headers: HEADERS,
+    let ipoType: string | null = null;
+
+    if (board.includes("sme")) {
+      ipoType = "SME";
+    } else if (board.includes("main")) {
+      ipoType = "Mainboard";
+    }
+
+    const links = [
+      ...row.matchAll(
+        /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi
+      ),
+    ];
+
+    const sourceUrl = links.length
+      ? getNseSourceUrl(links[0][1])
+      : NSE_URL;
+
+    const key = `${companyName}|${filingDate}|${ipoType ?? "unknown"}`;
+
+    filings.set(key, {
+      companyName,
+      ipoType,
+      filingDate,
+      sourceUrl,
+      boardType: cells[2],
     });
+  }
 
-    if (!response.ok) {
-      throw new Error(`NSE returned HTTP ${response.status}`);
-    }
+  if (filings.size === 0) {
+    throw new Error(
+      `No NSE records parsed. HTML length: ${html.length}; rows found: ${rows.length}. NSE page structure needs verification.`
+    );
+  }
 
-    const html = await response.text();
+  let detected = 0;
+  let inserted = 0;
+  let duplicates = 0;
+  let evidenceInserted = 0;
 
-    if (!html || html.length < 500) {
-      throw new Error("NSE returned an empty or incomplete page.");
-    }
+  for (const filing of filings.values()) {
+    detected++;
 
-    const rows =
-      html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+    const contentHash = createHash("sha256")
+      .update(
+        `NSE|${filing.companyName}|${filing.filingDate}|${filing.ipoType ?? ""}`
+      )
+      .digest("hex");
 
-    const filings = new Map<
-      string,
-      {
-        companyName: string;
-        ipoType: string | null;
-        filingDate: string;
-        sourceUrl: string;
-      }
-    >();
-
-    for (const row of rows) {
-      const cells = [
-        ...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi),
-      ].map((cell) => cleanText(cell[1]));
-
-      if (cells.length < 4) continue;
-
-      const companyName = cells[0];
-      const issueType = cells[1].toLowerCase();
-      const board = cells[2].toLowerCase();
-      const filingDate = parseNseDate(cells[3]);
-
-      if (
-        !companyName ||
-        !issueType.includes("ipo") ||
-        !filingDate
-      ) {
-        continue;
-      }
-
-      let ipoType: string | null = null;
-
-      if (board.includes("sme")) {
-        ipoType = "SME";
-      } else if (board.includes("main")) {
-        ipoType = "Mainboard";
-      }
-
-      const links = [
-        ...row.matchAll(
-          /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi
-        ),
-      ];
-
-      let sourceUrl = NSE_URL;
-
-      for (const link of links) {
-        try {
-          const url = new URL(link[1], NSE_URL);
-
-          if (NSE_HOSTS.includes(url.hostname)) {
-            sourceUrl = url.href;
-            break;
-          }
-        } catch {
-          continue;
-        }
-      }
-
-      const key = `${companyName}|${filingDate}`;
-
-      filings.set(key, {
-        companyName,
-        ipoType,
-        filingDate,
-        sourceUrl,
-      });
-    }
-
-    if (filings.size === 0) {
-      throw new Error(
-        `No NSE records parsed. HTML length: ${html.length}; rows found: ${rows.length}. NSE page structure needs verification.`
-      );
-    }
-
-    let detected = 0;
-    let inserted = 0;
-    let duplicates = 0;
-
-    for (const filing of filings.values()) {
-      detected++;
-
-      const contentHash = createHash("sha256")
-        .update(
-          `NSE|${filing.companyName}|${filing.filingDate}`
-        )
-        .digest("hex");
-
-      const { error } = await supabaseAdmin
+    const { data: queueRecord, error: queueError } =
+      await supabaseAdmin
         .from("ipo_import_queue")
         .insert({
           source_name: "NSE",
@@ -246,70 +248,163 @@ export async function POST() {
             company_name: filing.companyName,
             filing_date: filing.filingDate,
             ipo_type: filing.ipoType,
+            board_type: filing.boardType,
             source_url: filing.sourceUrl,
             source: "NSE",
           },
           content_hash: contentHash,
           review_status: "pending",
           collected_at: new Date().toISOString(),
-        });
+        })
+        .select("id")
+        .single();
 
-      if (error?.code === "23505") {
-        duplicates++;
-        continue;
-      }
+    if (queueError?.code === "23505") {
+      duplicates++;
+      continue;
+    }
 
-      if (error) {
-        throw new Error(
-          `IPO queue insert failed: ${error.message}`
-        );
-      }
+    if (queueError || !queueRecord) {
+      throw new Error(
+        `IPO queue insert failed: ${queueError?.message ?? "Record ID missing"}`
+      );
+    }
 
-      inserted++;
+    inserted++;
+
+    const { error: evidenceError } = await supabaseAdmin
+      .from("ipo_source_evidence")
+      .insert({
+        queue_id: queueRecord.id,
+        source_name: "NSE",
+        source_url: filing.sourceUrl,
+        evidence_type: "nse_csv_filing_record",
+        field_name: "drhp_filed_date",
+        field_value: filing.filingDate,
+        issuer_name: filing.companyName,
+        is_official_source: true,
+        validation_status: "unverified",
+        content_hash: contentHash,
+        observed_at: new Date().toISOString(),
+        metadata: {
+          evidence_scope: "NSE public issue advertisement filing",
+          board_type: filing.boardType,
+          issue_type: filing.ipoType,
+          related_date_column: "filing_date",
+          related_date_value: filing.filingDate,
+          review_status: "pending_manual_review",
+        },
+      });
+
+    if (evidenceError) {
+      throw new Error(
+        `NSE evidence insert failed: ${evidenceError.message}`
+      );
+    }
+
+    evidenceInserted++;
+  }
+
+  return {
+    detected,
+    inserted,
+    duplicates,
+    evidenceInserted,
+  };
+}
+
+async function handleCollection() {
+  try {
+    const collection = await collectIpos();
+
+    let matching: {
+      success: boolean;
+      mode?: string;
+      result?: unknown;
+      error?: string;
+    };
+
+    try {
+      const result = await runIpoMatching();
+
+      matching = {
+        success: true,
+        mode: "dry_run",
+        result,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Matching failed";
+
+      console.error("NSE matching dry run failed:", message);
+      await writeLog("failed", `Matching Dry Run failed: ${message}`);
+
+      matching = {
+        success: false,
+        error: message,
+      };
     }
 
     const message =
-      `Detected: ${detected}, Inserted: ${inserted}, Duplicates: ${duplicates}`;
+      `Detected: ${collection.detected}, Inserted: ${collection.inserted}, Duplicates: ${collection.duplicates}, Evidence: ${collection.evidenceInserted}`;
 
     await writeLog("success", message);
 
-    return NextResponse.json(
-      {
+    return jsonResponse({
+      success: true,
+      status: matching.success ? "success" : "partial_success",
+      source: "NSE",
+
+      // Backward-compatible dashboard fields
+      detected: collection.detected,
+      inserted: collection.inserted,
+      duplicates: collection.duplicates,
+
+      // Detailed collection result
+      collection: {
         success: true,
-        source: "NSE",
-        detected,
-        inserted,
-        duplicates,
+        ...collection,
         review_status: "pending",
-        message,
+        evidence_status: "unverified",
       },
-      {
-        headers: {
-          "Cache-Control": "no-store",
-        },
-      }
-    );
+
+      // Matching is read-only; it does not approve or publish IPOs
+      matching,
+      message,
+    });
   } catch (error) {
     const message =
-      error instanceof Error
-        ? error.message
-        : "Unknown collection error";
+      error instanceof Error ? error.message : "Unknown collection error";
 
     console.error("NSE IPO collection failed:", message);
-
     await writeLog("failed", message);
 
-    return NextResponse.json(
+    return jsonResponse(
       {
         success: false,
+        source: "NSE",
         error: "NSE IPO collection failed. Check server logs.",
       },
-      {
-        status: 502,
-        headers: {
-          "Cache-Control": "no-store",
-        },
-      }
+      502
     );
   }
+}
+
+export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+
+  if (!origin || origin !== request.nextUrl.origin) {
+    return jsonResponse(
+      { success: false, error: "Invalid request origin." },
+      403
+    );
+  }
+
+  const auth = await requireApiRole(["owner", "admin"]);
+
+  if (!auth.authorized) {
+    return auth.response;
+  }
+
+  return handleCollection();
 }

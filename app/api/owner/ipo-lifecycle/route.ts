@@ -1,8 +1,7 @@
-
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { requireApiRole } from "@/lib/require-api-role";
 import { runIpoLifecycleAssessment } from "@/lib/run-ipo-lifecycle";
 
 export const runtime = "nodejs";
@@ -15,7 +14,10 @@ export async function POST(request: NextRequest) {
     if (!origin || origin !== new URL(request.url).origin) {
       return NextResponse.json(
         { success: false, error: "Invalid request origin." },
-        { status: 403 }
+        {
+          status: 403,
+          headers: { "Cache-Control": "no-store" },
+        }
       );
     }
 
@@ -24,40 +26,17 @@ export async function POST(request: NextRequest) {
     if (!contentType.toLowerCase().includes("application/json")) {
       return NextResponse.json(
         { success: false, error: "JSON request required." },
-        { status: 415 }
+        {
+          status: 415,
+          headers: { "Cache-Control": "no-store" },
+        }
       );
     }
 
-    const supabase = await createSupabaseServerClient();
+    const auth = await requireApiRole(["owner", "admin"]);
 
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Authentication required." },
-        { status: 401 }
-      );
-    }
-
-    const { data: profile, error: profileError } =
-      await supabase
-        .from("profiles")
-        .select("role")
-        .eq("id", user.id)
-        .maybeSingle();
-
-    if (
-      profileError ||
-      !profile ||
-      !["owner", "admin"].includes(profile.role)
-    ) {
-      return NextResponse.json(
-        { success: false, error: "Owner or Admin access required." },
-        { status: 403 }
-      );
+    if (!auth.authorized) {
+      return auth.response;
     }
 
     const result = await runIpoLifecycleAssessment();

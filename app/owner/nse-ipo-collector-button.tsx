@@ -4,11 +4,31 @@ import { useState } from "react";
 
 type Result = {
   success?: boolean;
+  status?: string;
   source?: string;
   detected?: number;
   inserted?: number;
   duplicates?: number;
+  message?: string;
   error?: string;
+  matching?: {
+    success?: boolean;
+    mode?: string;
+    error?: string;
+    result?: {
+      processed?: number;
+      comparisons?: number;
+      candidatePairs?: number;
+      recordsWithCandidates?: number;
+      verified?: number;
+      linked?: number;
+      published?: number;
+    };
+  };
+  collection?: {
+    evidenceInserted?: number;
+    evidence_status?: string;
+  };
 };
 
 export default function NseIpoCollectorButton() {
@@ -25,7 +45,7 @@ export default function NseIpoCollectorButton() {
         credentials: "same-origin",
       });
 
-      const data = await response.json();
+      const data: Result = await response.json();
 
       if (!response.ok) {
         throw new Error(data.error || "NSE collection failed.");
@@ -55,8 +75,8 @@ export default function NseIpoCollectorButton() {
       </h2>
 
       <p className="mt-2 text-sm text-slate-400">
-        Collect IPO and draft offer document information from the NSE source
-        into the pending review queue.
+        Collect official NSE filing records into the pending review queue.
+        All collected evidence remains unverified until review.
       </p>
 
       <button
@@ -75,8 +95,11 @@ export default function NseIpoCollectorButton() {
           ) : (
             <>
               <p className="font-semibold text-emerald-400">
-                Collection request completed
+                {result.status === "partial_success"
+                  ? "Collection completed; matching needs attention"
+                  : "Collection request completed"}
               </p>
+
               <p className="mt-2 text-slate-300">
                 Detected: {result.detected ?? 0}
               </p>
@@ -85,6 +108,47 @@ export default function NseIpoCollectorButton() {
               </p>
               <p className="text-slate-300">
                 Duplicates: {result.duplicates ?? 0}
+              </p>
+              <p className="text-slate-300">
+                Evidence inserted: {result.collection?.evidenceInserted ?? 0}
+              </p>
+
+              <div className="mt-4 border-t border-slate-700 pt-3">
+                <p className="font-semibold text-blue-400">
+                  IPO Matching Dry Run
+                </p>
+
+                {result.matching?.success ? (
+                  <>
+                    <p className="mt-2 text-emerald-400">
+                      Read-only analysis completed
+                    </p>
+                    <p className="text-slate-300">
+                      Records processed: {result.matching.result?.processed ?? 0}
+                    </p>
+                    <p className="text-slate-300">
+                      Comparisons: {result.matching.result?.comparisons ?? 0}
+                    </p>
+                    <p className="text-slate-300">
+                      Potential matches: {result.matching.result?.candidatePairs ?? 0}
+                    </p>
+                    <p className="text-slate-300">
+                      Verified: {result.matching.result?.verified ?? 0}
+                    </p>
+                    <p className="text-slate-300">
+                      Published: {result.matching.result?.published ?? 0}
+                    </p>
+                  </>
+                ) : (
+                  <p className="mt-2 text-amber-400">
+                    Matching failed: {result.matching?.error ?? "No matching result returned."}
+                  </p>
+                )}
+              </div>
+
+              <p className="mt-3 text-xs text-slate-500">
+                Matching is read-only. No IPO is automatically verified,
+                approved, linked, or published.
               </p>
             </>
           )}

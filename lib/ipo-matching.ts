@@ -1,8 +1,6 @@
-
 /**
- * Capital360IPO — Company Matching Engine
+ * Capital360IPO — Safe Company Matching Engine
  *
- * Compares company names collected from different sources.
  * Name similarity is only a candidate signal.
  * It never independently verifies or publishes an IPO.
  */
@@ -42,10 +40,7 @@ export function normalizeCompanyName(name: string): string {
     .toLowerCase()
     .replace(/&/g, " and ")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(
-      /\b(private limited|private ltd|pvt limited|pvt ltd|limited|ltd|incorporated|inc|corporation|corp|company|co)\b/gi,
-      " "
-    )
+    .replace(/\b(private limited|private ltd|pvt limited|pvt ltd|limited|ltd|incorporated|inc|corporation|corp|company|co)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -70,27 +65,25 @@ export function calculateCompanyNameSimilarity(
 
   if (!first || !second) return 0;
 
+  if (first === second) return 100;
+
   const firstWords = getDistinctiveWords(first);
   const secondWords = getDistinctiveWords(second);
 
-  if (firstWords.size === 0 || secondWords.size === 0) {
-    return 0;
-  }
-
-  if (first === second) return 100;
+  if (!firstWords.size || !secondWords.size) return 0;
 
   const commonWords = [...firstWords].filter((word) =>
     secondWords.has(word)
   ).length;
 
-  const totalWords = firstWords.size + secondWords.size;
-
-  return Math.round((2 * commonWords / totalWords) * 100);
+  return Math.round(
+    (2 * commonWords / (firstWords.size + secondWords.size)) * 100
+  );
 }
 
 /**
- * Strong candidate requires distinctive name evidence.
- * Independent source verification is always required.
+ * Strong name signal only.
+ * This is NOT proof of company identity.
  */
 export function isStrongCompanyNameMatch(
   firstName: string,
@@ -101,20 +94,21 @@ export function isStrongCompanyNameMatch(
 
   if (!first || !second) return false;
 
+  // Exact normalized names are a strong signal,
+  // but still require independent official verification.
+  if (first === second) return true;
+
   const firstWords = getDistinctiveWords(first);
   const secondWords = getDistinctiveWords(second);
 
-  if (firstWords.size === 0 || secondWords.size === 0) {
-    return false;
-  }
+  if (!firstWords.size || !secondWords.size) return false;
 
-  if (first === second) return true;
-
+  // Generic-word-only matches are never accepted.
   const commonWords = [...firstWords].filter((word) =>
     secondWords.has(word)
   );
 
-  if (commonWords.length === 0) return false;
+  if (!commonWords.length) return false;
 
-  return calculateCompanyNameSimilarity(firstName, secondName) >= 90;
+  return calculateCompanyNameSimilarity(first, second) >= 90;
 }

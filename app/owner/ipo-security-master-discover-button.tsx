@@ -2,16 +2,24 @@
 
 import { useState } from "react";
 
+type ScriptInfo = {
+  url: string;
+  success: boolean;
+  length: number;
+  error?: string | null;
+  functionMatches: number;
+};
+
 type DiscoverResult = {
   success?: boolean;
   mode?: string;
   pageLength?: number;
-  scriptLength?: number;
-  scriptUrl?: string;
-  htmlButtonMatches?: number;
-  scriptReferenceMatches?: number;
-  htmlContexts?: string[];
-  scriptContexts?: string[];
+  scriptsDiscovered?: number;
+  scriptsFetched?: number;
+  scriptsFailed?: number;
+  scriptInventory?: ScriptInfo[];
+  functionMatchCount?: number;
+  functionContexts?: string[];
   databaseWrites?: number;
   filesDownloaded?: number;
   note?: string;
@@ -60,31 +68,6 @@ export default function IpoSecurityMasterDiscoverButton() {
     }
   }
 
-  function renderContexts(title: string, contexts?: string[]) {
-    if (!contexts || contexts.length === 0) {
-      return (
-        <p className="mt-2 text-sm text-amber-300">
-          No matching references found.
-        </p>
-      );
-    }
-
-    return (
-      <div className="mt-3 space-y-3">
-        <p className="text-sm font-semibold text-white">{title}</p>
-
-        {contexts.map((context, index) => (
-          <pre
-            key={`${title}-${index}`}
-            className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-900 p-3 text-xs leading-5 text-slate-300"
-          >
-            {context}
-          </pre>
-        ))}
-      </div>
-    );
-  }
-
   return (
     <section className="rounded-xl border border-cyan-800 bg-slate-900 p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -93,7 +76,7 @@ export default function IpoSecurityMasterDiscoverButton() {
             NSE Security Master Discovery
           </h3>
           <p className="mt-1 text-sm text-slate-400">
-            Inspect official NSE report page and download script.
+            Inspect official NSE JavaScript files and download functions.
           </p>
         </div>
 
@@ -116,75 +99,82 @@ export default function IpoSecurityMasterDiscoverButton() {
               </p>
 
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <div>
-                  <p className="text-xs text-slate-400">Mode</p>
-                  <p className="text-sm text-white">
-                    {result.mode || "—"}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-xs text-slate-400">
-                    HTML Button Matches
-                  </p>
-                  <p className="text-sm text-white">
-                    {result.htmlButtonMatches ?? 0}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-xs text-slate-400">
-                    JavaScript Reference Matches
-                  </p>
-                  <p className="text-sm text-white">
-                    {result.scriptReferenceMatches ?? 0}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-xs text-slate-400">HTML Page Length</p>
-                  <p className="text-sm text-white">
-                    {result.pageLength ?? 0} characters
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-xs text-slate-400">Script Length</p>
-                  <p className="text-sm text-white">
-                    {result.scriptLength ?? 0} characters
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-xs text-slate-400">Database Writes</p>
-                  <p className="text-sm text-white">
-                    {result.databaseWrites ?? 0}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-xs text-slate-400">Files Downloaded</p>
-                  <p className="text-sm text-white">
-                    {result.filesDownloaded ?? 0}
-                  </p>
-                </div>
+                {[
+                  ["Mode", result.mode],
+                  ["HTML Page Length", result.pageLength],
+                  ["Scripts Discovered", result.scriptsDiscovered],
+                  ["Scripts Fetched", result.scriptsFetched],
+                  ["Scripts Failed", result.scriptsFailed],
+                  ["Function Matches", result.functionMatchCount],
+                  ["Database Writes", result.databaseWrites],
+                  ["Files Downloaded", result.filesDownloaded],
+                ].map(([label, value]) => (
+                  <div key={String(label)}>
+                    <p className="text-xs text-slate-400">{label}</p>
+                    <p className="break-all text-sm text-white">
+                      {value ?? "—"}
+                    </p>
+                  </div>
+                ))}
               </div>
 
-              {result.scriptUrl && (
-                <p className="mt-4 break-all text-xs text-slate-400">
-                  Script: {result.scriptUrl}
-                </p>
-              )}
+              <div className="mt-5">
+                <h4 className="font-semibold text-white">
+                  Script Inventory
+                </h4>
 
-              {renderContexts(
-                "HTML Button References",
-                result.htmlContexts
-              )}
+                {result.scriptInventory?.length ? (
+                  <div className="mt-3 space-y-2">
+                    {result.scriptInventory.map((script, index) => (
+                      <div
+                        key={`${script.url}-${index}`}
+                        className="rounded-lg border border-slate-700 p-3"
+                      >
+                        <p className="break-all text-xs text-cyan-300">
+                          {script.url}
+                        </p>
+                        <p className="mt-2 text-xs text-slate-300">
+                          Status: {script.success ? "Fetched" : "Failed"}
+                          {" | "}Length: {script.length}
+                          {" | "}Matches: {script.functionMatches}
+                        </p>
+                        {script.error && (
+                          <p className="mt-1 text-xs text-red-400">
+                            {script.error}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-amber-300">
+                    No JavaScript files discovered.
+                  </p>
+                )}
+              </div>
 
-              {renderContexts(
-                "JavaScript Download References",
-                result.scriptContexts
-              )}
+              <div className="mt-5">
+                <h4 className="font-semibold text-white">
+                  Function Contexts
+                </h4>
+
+                {result.functionContexts?.length ? (
+                  <div className="mt-3 space-y-3">
+                    {result.functionContexts.map((context, index) => (
+                      <pre
+                        key={index}
+                        className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-900 p-3 text-xs leading-5 text-slate-300"
+                      >
+                        {context}
+                      </pre>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-amber-300">
+                    No function references found.
+                  </p>
+                )}
+              </div>
 
               <p className="mt-4 text-xs text-slate-400">
                 {result.note}

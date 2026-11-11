@@ -2,28 +2,33 @@
 
 import { useState } from "react";
 
-type ScriptInfo = {
-  url: string;
-  success: boolean;
-  length: number;
-  contextMatches: number;
-  error?: string | null;
+type ContextInfo = {
+  term: string;
+  position: number;
+  context: string;
 };
 
 type DiscoverResult = {
   success?: boolean;
   mode?: string;
-  pageLength?: number;
-  htmlMatchCount?: number;
-  scriptsDiscovered?: number;
-  scriptsFetched?: number;
-  scriptsFailed?: number;
-  scriptInventory?: ScriptInfo[];
-  htmlContexts?: string[];
-  scriptContexts?: string[];
-  databaseWrites?: number;
-  filesDownloaded?: number;
-  note?: string;
+  inspection?: {
+    pageUrl?: string;
+    scriptUrl?: string;
+    htmlLength?: number;
+    scriptLength?: number;
+    htmlHttpStatus?: number;
+    scriptHttpStatus?: number;
+  };
+  htmlContexts?: ContextInfo[];
+  javascriptContexts?: ContextInfo[];
+  filenameMatches?: string[];
+  safety?: {
+    databaseWrites?: number;
+    filesDownloaded?: number;
+    externalDownloadEndpointsCalled?: number;
+    databaseModified?: boolean;
+  };
+  nextStep?: string;
   error?: string;
 };
 
@@ -69,7 +74,7 @@ export default function IpoSecurityMasterDiscoverButton() {
     }
   }
 
-  function renderContexts(contexts?: string[]) {
+  function renderContexts(contexts?: ContextInfo[]) {
     if (!contexts || contexts.length === 0) {
       return (
         <p className="mt-2 text-sm text-amber-300">
@@ -80,13 +85,19 @@ export default function IpoSecurityMasterDiscoverButton() {
 
     return (
       <div className="mt-3 space-y-3">
-        {contexts.map((context, index) => (
-          <pre
-            key={index}
-            className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-900 p-3 text-xs leading-5 text-slate-300"
+        {contexts.map((item, index) => (
+          <div
+            key={`${item.term}-${item.position}-${index}`}
+            className="rounded-lg border border-slate-700 p-3"
           >
-            {context}
-          </pre>
+            <p className="mb-2 text-xs font-semibold text-cyan-300">
+              {item.term} — Position: {item.position}
+            </p>
+
+            <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-900 p-3 text-xs leading-5 text-slate-300">
+              {item.context}
+            </pre>
+          </div>
         ))}
       </div>
     );
@@ -125,18 +136,16 @@ export default function IpoSecurityMasterDiscoverButton() {
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 {[
                   ["Mode", result.mode],
-                  ["HTML Page Length", result.pageLength],
-                  ["HTML Match Count", result.htmlMatchCount],
-                  ["Scripts Discovered", result.scriptsDiscovered],
-                  ["Scripts Fetched", result.scriptsFetched],
-                  ["Scripts Failed", result.scriptsFailed],
-                  ["Database Writes", result.databaseWrites],
-                  ["Files Downloaded", result.filesDownloaded],
+                  ["HTML Length", result.inspection?.htmlLength],
+                  ["Script Length", result.inspection?.scriptLength],
+                  ["HTML HTTP Status", result.inspection?.htmlHttpStatus],
+                  ["Script HTTP Status", result.inspection?.scriptHttpStatus],
+                  ["Database Writes", result.safety?.databaseWrites],
+                  ["Files Downloaded", result.safety?.filesDownloaded],
+                  ["Database Modified", String(result.safety?.databaseModified)],
                 ].map(([label, value]) => (
                   <div key={String(label)}>
-                    <p className="text-xs text-slate-400">
-                      {label}
-                    </p>
+                    <p className="text-xs text-slate-400">{label}</p>
                     <p className="break-all text-sm text-white">
                       {value ?? "—"}
                     </p>
@@ -146,45 +155,23 @@ export default function IpoSecurityMasterDiscoverButton() {
 
               <div className="mt-5">
                 <h4 className="font-semibold text-white">
-                  Script Inventory
+                  Filename Matches
                 </h4>
-
-                {result.scriptInventory?.length ? (
-                  <div className="mt-3 space-y-2">
-                    {result.scriptInventory.map((script, index) => (
-                      <div
-                        key={`${script.url}-${index}`}
-                        className="rounded-lg border border-slate-700 p-3"
-                      >
-                        <p className="break-all text-xs text-cyan-300">
-                          {script.url}
-                        </p>
-
-                        <p className="mt-2 text-xs text-slate-300">
-                          Status: {script.success ? "Fetched" : "Failed"}
-                          {" | "}Length: {script.length}
-                          {" | "}Matches: {script.contextMatches}
-                        </p>
-
-                        {script.error && (
-                          <p className="mt-1 text-xs text-red-400">
-                            {script.error}
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+                {result.filenameMatches?.length ? (
+                  result.filenameMatches.map((name, index) => (
+                    <p key={index} className="mt-2 break-all text-xs text-cyan-300">
+                      {name}
+                    </p>
+                  ))
                 ) : (
                   <p className="mt-2 text-sm text-amber-300">
-                    No JavaScript files discovered.
+                    No filename matches found.
                   </p>
                 )}
               </div>
 
               <div className="mt-5">
-                <h4 className="font-semibold text-white">
-                  HTML Contexts
-                </h4>
+                <h4 className="font-semibold text-white">HTML Contexts</h4>
                 {renderContexts(result.htmlContexts)}
               </div>
 
@@ -192,15 +179,15 @@ export default function IpoSecurityMasterDiscoverButton() {
                 <h4 className="font-semibold text-white">
                   JavaScript Contexts
                 </h4>
-                {renderContexts(result.scriptContexts)}
+                {renderContexts(result.javascriptContexts)}
               </div>
 
               <p className="mt-4 text-xs text-slate-400">
-                {result.note}
+                {result.nextStep}
               </p>
             </>
           ) : (
-            <p className="text-sm text-red-400">
+            <p className="break-words text-sm text-red-400">
               {result.error || "Discovery failed."}
             </p>
           )}

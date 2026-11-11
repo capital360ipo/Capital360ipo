@@ -9,104 +9,79 @@ import NseAttachmentParserButton from "./nse-attachment-parser-button";
 import NseListingCollectorButton from "./nse-listing-collector-button";
 import NseIpoTrackerPreview from "./nse-ipo-tracker-preview";
 import IpoListingHistoryImport from "./ipo-listing-history-import";
+import IpoListingHistoryReview from "./ipo-listing-history-review";
+
+export const dynamic = "force-dynamic";
 
 export default async function OwnerDashboard() {
   const { user, profile } = await requireOwner();
 
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-10 text-white">
-      <div className="mx-auto max-w-6xl">
+      <div className="mx-auto max-w-7xl space-y-8">
 
-        <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
-          <Link href="/" className="text-xl font-bold tracking-wide">
-            CAPITAL<span className="text-emerald-400">360</span>IPO
-          </Link>
+        <header className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold">
+              Capital360IPO
+            </h1>
+            <p className="mt-2 text-sm text-slate-400">
+              Owner Dashboard
+            </p>
+          </div>
 
           <Link
-            href="/account"
-            className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
+            href="/"
+            className="rounded-lg border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800"
           >
-            My Account
+            Visit Website
           </Link>
         </header>
 
-        <section className="mb-8 rounded-2xl border border-emerald-500/30 bg-slate-900 p-6">
-          <p className="text-sm font-semibold tracking-wider text-emerald-400">
-            OWNER CONTROL PANEL
+        <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+          <h2 className="text-lg font-semibold">
+            Account Information
+          </h2>
+
+          <p className="mt-2 text-sm text-slate-300">
+            Email: {user.email}
           </p>
 
-          <h1 className="mt-3 text-3xl font-bold">
-            Welcome, {profile.full_name || "Owner"}!
-          </h1>
-
-          <p className="mt-2 break-all text-sm text-slate-400">
-            {user.email}
+          <p className="mt-1 text-sm text-slate-300">
+            Role: {profile.role}
           </p>
-
-          <div className="mt-5 inline-flex rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-400">
-            Verified Owner Access
-          </div>
         </section>
 
-        <section className="mb-8">
-          <h2 className="mb-4 text-xl font-bold">
+        <section className="space-y-6">
+          <h2 className="text-2xl font-bold">
+            IPO Automation & Data Management
+          </h2>
+
+          <IpoCollectorButton />
+
+          <NseIpoCollectorButton />
+
+          <NseCsvImport />
+
+          <IpoLifecycleButton />
+
+          <NseAttachmentParserButton />
+
+          <NseListingCollectorButton />
+
+          <NseIpoTrackerPreview />
+
+          <IpoListingHistoryImport />
+
+          <IpoListingHistoryReview />
+        </section>
+
+        <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+          <h2 className="mb-4 text-xl font-semibold">
             Team Management
           </h2>
+
           <StaffForm />
-        </section>
-
-        <section className="mb-8">
-          <h2 className="mb-4 text-xl font-bold">
-            IPO Automation Controls
-          </h2>
-
-          <div className="space-y-6">
-            <IpoCollectorButton />
-            <NseIpoCollectorButton />
-            <NseCsvImport />
-            <NseAttachmentParserButton />
-            <IpoLifecycleButton />
-            <NseListingCollectorButton />
-            <NseIpoTrackerPreview />
-            <IpoListingHistoryImport />
-          </div>
-        </section>
-
-        <section className="grid gap-5 md:grid-cols-2">
-
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
-            <h2 className="text-lg font-bold">
-              Security Control
-            </h2>
-            <p className="mt-2 text-sm text-slate-400">
-              Manage access, permissions and platform security.
-            </p>
-          </div>
-
-          <Link
-            href="/ipos"
-            className="rounded-2xl border border-slate-800 bg-slate-900 p-6 transition hover:border-emerald-500/50"
-          >
-            <h2 className="text-lg font-bold">
-              IPO Management
-            </h2>
-            <p className="mt-2 text-sm text-slate-400">
-              Manage IPO records, details and review workflow.
-            </p>
-            <p className="mt-4 text-sm font-semibold text-emerald-400">
-              Open IPO Management →
-            </p>
-          </Link>
-
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
-            <h2 className="text-lg font-bold">
-              Audit &amp; Logs
-            </h2>
-            <p className="mt-2 text-sm text-slate-400">
-              Review platform activity and automation logs.
-            </p>
-          </div>
-
         </section>
 
       </div>

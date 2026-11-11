@@ -71,33 +71,40 @@ function findScriptUrl(html: string) {
   return null;
 }
 
-function extractContexts(source: string, terms: string[]) {
+function extractLastContexts(
+  source: string,
+  terms: string[],
+  maxPerTerm = 4
+) {
   const results: string[] = [];
   const lowerSource = source.toLowerCase();
 
   for (const term of terms) {
+    const lowerTerm = term.toLowerCase();
+    const positions: number[] = [];
     let position = 0;
-    let count = 0;
 
-    while (count < 5) {
-      const index = lowerSource.indexOf(term.toLowerCase(), position);
+    while (true) {
+      const index = lowerSource.indexOf(lowerTerm, position);
 
       if (index === -1) break;
 
+      positions.push(index);
+      position = index + lowerTerm.length;
+    }
+
+    for (const index of positions.slice(-maxPerTerm)) {
       results.push(
-        `MATCH: ${term}\n` +
+        `MATCH: ${term} | Position: ${index}\n` +
           source.slice(
-            Math.max(0, index - 700),
-            Math.min(source.length, index + 1800)
+            Math.max(0, index - 1200),
+            Math.min(source.length, index + 3000)
           )
       );
-
-      position = index + term.length;
-      count++;
     }
   }
 
-  return results.slice(0, 20);
+  return results.slice(0, 30);
 }
 
 export async function POST(request: NextRequest) {
@@ -133,31 +140,29 @@ export async function POST(request: NextRequest) {
 
     const script = await fetchText(scriptUrl);
 
-    const buttonIds = [
+    const htmlContexts = extractLastContexts(html, [
       "cr_equity_archives_mii_security_file_nse",
       "cr_equity_archives_mii_security_file_nse_bse",
-      "hreq_security_downloadbtn",
-    ];
+    ]);
 
-    const htmlContexts = extractContexts(html, buttonIds);
-
-    const scriptContexts = extractContexts(script, [
-      ...buttonIds,
-      "download",
+    const scriptContexts = extractLastContexts(script, [
+      "SingledownloadReports",
+      "function SingledownloadReports",
+      "downloadReports",
+      "function downloadReports",
       "filePath",
+      "fileName",
+      "downloadUrl",
       "fileUrl",
       "reportDownload",
-      "downloadFile",
-      "pdf-download-link",
-      "mii_security",
-      "security_file",
-      "getElementById",
-      "addEventListener",
-    ]);
+      "XMLHttpRequest",
+      "$.ajax",
+      "fetch(",
+    ], 5);
 
     return jsonResponse({
       success: true,
-      mode: "READ_ONLY_SCRIPT_INSPECTION_V3",
+      mode: "READ_ONLY_FUNCTION_INSPECTION_V4",
       pageLength: html.length,
       scriptLength: script.length,
       scriptUrl,
@@ -168,15 +173,15 @@ export async function POST(request: NextRequest) {
       databaseWrites: 0,
       filesDownloaded: 0,
       note:
-        "NSE HTML and JavaScript inspected only. No files downloaded and no database records modified.",
+        "NSE download-function references inspected only. No files downloaded and no database records modified.",
     });
   } catch (error) {
     const message =
       error instanceof Error
         ? error.message
-        : "Unknown NSE script inspection error";
+        : "Unknown NSE function inspection error";
 
-    console.error("NSE script inspection failed:", message);
+    console.error("NSE function inspection failed:", message);
 
     return jsonResponse(
       {

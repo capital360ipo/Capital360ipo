@@ -24,13 +24,20 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-async function fetchText(url: string) {
-  const parsed = new URL(url);
+function isNseUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.hostname === NSE_HOST
+    );
+  } catch {
+    return false;
+  }
+}
 
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.hostname !== NSE_HOST
-  ) {
+async function fetchText(url: string) {
+  if (!isNseUrl(url)) {
     throw new Error("Blocked non-NSE resource.");
   }
 
@@ -38,7 +45,7 @@ async function fetchText(url: string) {
     method: "GET",
     cache: "no-store",
     redirect: "error",
-    signal: AbortSignal.timeout(25000),
+    signal: AbortSignal.timeout(8000),
     headers: HEADERS,
   });
 
@@ -46,65 +53,103 @@ async function fetchText(url: string) {
     throw new Error(`NSE returned HTTP ${response.status}`);
   }
 
-  const text = await response.text();
+  const content = await response.text();
 
-  if (!text) {
+  if (!content) {
     throw new Error("NSE returned an empty response.");
   }
 
-  return text;
+  return content;
 }
 
-function findScriptUrl(html: string) {
+function extractScriptUrls(html: string) {
   const tags = html.match(/<script\b[^>]*>/gi) || [];
+  const urls = new Set<string>();
 
   for (const tag of tags) {
-    if (!/all-reports\.js/i.test(tag)) continue;
-
     const match = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
 
     if (!match) continue;
 
-    return new URL(match[1], NSE_PAGE).toString();
+    try {
+      const url = new URL(match[1], NSE_PAGE).toString();
+
+      if (
+        isNseUrl(url) &&
+        /\.js(?:[?#]|$)/i.test(url)
+      ) {
+        urls.add(url);
+      }
+    } catch {
+      // Ignore invalid script URLs.
+    }
   }
 
-  return null;
+  const priority = (url: string) => {
+    const name = url.toLowerCase();
+
+    if (name.includes("all-reports")) return 0;
+    if (name.includes("report")) return 1;
+    if (name.includes("download")) return 2;
+    if (name.includes("common") || name.includes("global")) return 3;
+    if (name.includes("main") || name.includes("bundle")) return 4;
+
+    return 5;
+  };
+
+  return Array.from(urls)
+    .sort((a, b) => priority(a) - priority(b))
+    .slice(0, 20);
 }
 
-function extractLastContexts(
+function extractFunctionContexts(
   source: string,
-  terms: string[],
-  maxPerTerm = 4
+  sourceName: string
 ) {
+  const terms = [
+    "SingledownloadReports",
+    "downloadReports",
+    "function SingledownloadReports",
+    "function downloadReports",
+    "window.SingledownloadReports",
+    "window.downloadReports",
+    "filePath",
+    "fileName",
+    "downloadUrl",
+    "fileUrl",
+    "reportDownload",
+    "ajax",
+  ];
+
+  const lower = source.toLowerCase();
   const results: string[] = [];
-  const lowerSource = source.toLowerCase();
 
   for (const term of terms) {
-    const lowerTerm = term.toLowerCase();
-    const positions: number[] = [];
+    const search = term.toLowerCase();
     let position = 0;
+    let count = 0;
 
-    while (true) {
-      const index = lowerSource.indexOf(lowerTerm, position);
+    while (count < 3) {
+      const index = lower.indexOf(search, position);
 
       if (index === -1) break;
 
-      positions.push(index);
-      position = index + lowerTerm.length;
-    }
-
-    for (const index of positions.slice(-maxPerTerm)) {
       results.push(
-        `MATCH: ${term} | Position: ${index}\n` +
-          source.slice(
-            Math.max(0, index - 1200),
-            Math.min(source.length, index + 3000)
-          )
+        `FILE: ${sourceName}\n` +
+        `MATCH: ${term}\n` +
+        `POSITION: ${index}\n` +
+        source.slice(
+          Math.max(0, index - 900),
+          Math.min(source.length, index + 2200)
+        )
       );
+
+      position = index + search.length;
+      count++;
     }
   }
 
-  return results.slice(0, 30);
+  return results;
 }
 
 export async function POST(request: NextRequest) {
@@ -130,58 +175,74 @@ export async function POST(request: NextRequest) {
       throw new Error("NSE returned an incomplete page.");
     }
 
-    const scriptUrl = findScriptUrl(html);
+    const scriptUrls = extractScriptUrls(html);
 
-    if (!scriptUrl) {
-      throw new Error(
-        "NSE all-reports JavaScript reference was not found."
-      );
+    if (scriptUrls.length === 0) {
+      throw new Error("No official NSE JavaScript files found.");
     }
 
-    const script = await fetchText(scriptUrl);
+    const scriptResults = await Promise.all(
+      scriptUrls.map(async (url) => {
+        try {
+          const source = await fetchText(url);
 
-    const htmlContexts = extractLastContexts(html, [
-      "cr_equity_archives_mii_security_file_nse",
-      "cr_equity_archives_mii_security_file_nse_bse",
-    ]);
+          return {
+            url,
+            success: true,
+            length: source.length,
+            contexts: extractFunctionContexts(source, url),
+          };
+        } catch (error) {
+          return {
+            url,
+            success: false,
+            length: 0,
+            contexts: [],
+            error:
+              error instanceof Error
+                ? error.message
+                : "Script inspection failed",
+          };
+        }
+      })
+    );
 
-    const scriptContexts = extractLastContexts(script, [
-      "SingledownloadReports",
-      "function SingledownloadReports",
-      "downloadReports",
-      "function downloadReports",
-      "filePath",
-      "fileName",
-      "downloadUrl",
-      "fileUrl",
-      "reportDownload",
-      "XMLHttpRequest",
-      "$.ajax",
-      "fetch(",
-    ], 5);
+    const allContexts = scriptResults
+      .flatMap((item) => item.contexts)
+      .slice(0, 35);
 
     return jsonResponse({
       success: true,
-      mode: "READ_ONLY_FUNCTION_INSPECTION_V4",
+      mode: "READ_ONLY_NSE_SCRIPT_SCAN_V5",
       pageLength: html.length,
-      scriptLength: script.length,
-      scriptUrl,
-      htmlButtonMatches: htmlContexts.length,
-      scriptReferenceMatches: scriptContexts.length,
-      htmlContexts,
-      scriptContexts,
+      scriptsDiscovered: scriptUrls.length,
+      scriptsFetched: scriptResults.filter(
+        (item) => item.success
+      ).length,
+      scriptsFailed: scriptResults.filter(
+        (item) => !item.success
+      ).length,
+      scriptInventory: scriptResults.map((item) => ({
+        url: item.url,
+        success: item.success,
+        length: item.length,
+        error: item.error ?? null,
+        functionMatches: item.contexts.length,
+      })),
+      functionMatchCount: allContexts.length,
+      functionContexts: allContexts,
       databaseWrites: 0,
       filesDownloaded: 0,
       note:
-        "NSE download-function references inspected only. No files downloaded and no database records modified.",
+        "Official NSE JavaScript files inspected only. No security master file downloaded and no database records modified.",
     });
   } catch (error) {
     const message =
       error instanceof Error
         ? error.message
-        : "Unknown NSE function inspection error";
+        : "Unknown NSE script inspection error";
 
-    console.error("NSE function inspection failed:", message);
+    console.error("NSE V5 inspection failed:", message);
 
     return jsonResponse(
       {

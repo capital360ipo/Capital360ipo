@@ -1,6 +1,27 @@
+
 "use client";
 
 import { useState } from "react";
+
+type MatchingResult = {
+  processed?: number;
+  sourceCounts?: Record<string, number>;
+  totalPossiblePairs?: number;
+  sameSourcePairsExcluded?: number;
+  possibleCrossSourcePairs?: number;
+  crossSourcePairsConsidered?: number;
+  comparisons?: number;
+  typeMismatchPairs?: number;
+  tokenOverlapPairs?: number;
+  noTokenOverlapPairs?: number;
+  candidatePairs?: number;
+  recordsWithCandidates?: number;
+  verified?: number;
+  linked?: number;
+  published?: number;
+  readOnly?: boolean;
+  databaseWrites?: number;
+};
 
 type Result = {
   success?: boolean;
@@ -22,17 +43,26 @@ type Result = {
     status?: string;
     mode?: string;
     error?: string | null;
-    result?: {
-      processed?: number;
-      comparisons?: number;
-      candidatePairs?: number;
-      recordsWithCandidates?: number;
-      verified?: number;
-      linked?: number;
-      published?: number;
-    } | null;
+    result?: MatchingResult | null;
   };
 };
+
+function Metric({
+  label,
+  value,
+}: {
+  label: string;
+  value: number | string;
+}) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900 p-3">
+      <p className="text-xs text-slate-500">{label}</p>
+      <p className="mt-1 text-xl font-bold text-slate-100">
+        {value}
+      </p>
+    </div>
+  );
+}
 
 export default function IpoCollectorButton() {
   const [loading, setLoading] = useState(false);
@@ -66,6 +96,8 @@ export default function IpoCollectorButton() {
       setLoading(false);
     }
   }
+
+  const matching = result?.matching?.result;
 
   return (
     <section className="mt-6 rounded-2xl border border-emerald-500/30 bg-slate-900 p-6">
@@ -103,41 +135,16 @@ export default function IpoCollectorButton() {
                   : "SEBI Collection Completed"}
               </p>
 
-              <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-                <div>
-                  <p className="text-slate-500">Detected</p>
-                  <p className="mt-1 text-xl font-bold">
-                    {result.collection?.detected ?? 0}
-                  </p>
-                </div>
+              <h3 className="mt-4 font-semibold text-slate-200">
+                Collection Summary
+              </h3>
 
-                <div>
-                  <p className="text-slate-500">Inserted</p>
-                  <p className="mt-1 text-xl font-bold">
-                    {result.collection?.inserted ?? 0}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-slate-500">Duplicates</p>
-                  <p className="mt-1 text-xl font-bold">
-                    {result.collection?.duplicates ?? 0}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-slate-500">Evidence Inserted</p>
-                  <p className="mt-1 text-xl font-bold">
-                    {result.collection?.evidenceInserted ?? 0}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-slate-500">Evidence Duplicates</p>
-                  <p className="mt-1 text-xl font-bold">
-                    {result.collection?.evidenceDuplicates ?? 0}
-                  </p>
-                </div>
+              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                <Metric label="Detected" value={result.collection?.detected ?? 0} />
+                <Metric label="Inserted" value={result.collection?.inserted ?? 0} />
+                <Metric label="Duplicates" value={result.collection?.duplicates ?? 0} />
+                <Metric label="Evidence Inserted" value={result.collection?.evidenceInserted ?? 0} />
+                <Metric label="Evidence Duplicates" value={result.collection?.evidenceDuplicates ?? 0} />
               </div>
 
               <div className="mt-5 border-t border-slate-700 pt-4">
@@ -145,28 +152,87 @@ export default function IpoCollectorButton() {
                   IPO Matching Dry Run
                 </p>
 
-                {result.matching?.success ? (
+                {result.matching?.success && matching ? (
                   <>
                     <p className="mt-2 text-emerald-400">
                       Read-only analysis completed
                     </p>
 
-                    <p className="mt-2 text-slate-300">
-                      Records processed: {result.matching.result?.processed ?? 0}
-                    </p>
-                    <p className="text-slate-300">
-                      Comparisons: {result.matching.result?.comparisons ?? 0}
-                    </p>
-                    <p className="text-slate-300">
-                      Potential matches: {result.matching.result?.candidatePairs ?? 0}
-                    </p>
-                    <p className="text-slate-300">
-                      Records with candidates: {result.matching.result?.recordsWithCandidates ?? 0}
-                    </p>
+                    <h4 className="mt-4 font-semibold text-slate-200">
+                      Matching Overview
+                    </h4>
+
+                    <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      <Metric label="Records Processed" value={matching.processed ?? 0} />
+                      <Metric label="Total Possible Pairs" value={matching.totalPossiblePairs ?? 0} />
+                      <Metric label="Same-source Excluded" value={matching.sameSourcePairsExcluded ?? 0} />
+                      <Metric label="Possible Cross-source Pairs" value={matching.possibleCrossSourcePairs ?? 0} />
+                      <Metric label="Cross-source Considered" value={matching.crossSourcePairsConsidered ?? 0} />
+                      <Metric label="Actual Comparisons" value={matching.comparisons ?? 0} />
+                    </div>
+
+                    <h4 className="mt-5 font-semibold text-slate-200">
+                      Matching Diagnostics
+                    </h4>
+
+                    <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      <Metric label="Token Overlap Pairs" value={matching.tokenOverlapPairs ?? 0} />
+                      <Metric label="No Token Overlap Pairs" value={matching.noTokenOverlapPairs ?? 0} />
+                      <Metric label="IPO Type Mismatches" value={matching.typeMismatchPairs ?? 0} />
+                      <Metric label="Potential Matches" value={matching.candidatePairs ?? 0} />
+                      <Metric label="Records with Candidates" value={matching.recordsWithCandidates ?? 0} />
+                    </div>
+
+                    {matching.sourceCounts && (
+                      <>
+                        <h4 className="mt-5 font-semibold text-slate-200">
+                          Source-wise Records
+                        </h4>
+
+                        <div className="mt-2 space-y-2">
+                          {Object.entries(matching.sourceCounts).map(
+                            ([source, count]) => (
+                              <div
+                                key={source}
+                                className="flex justify-between rounded-lg bg-slate-900 px-3 py-2"
+                              >
+                                <span className="text-slate-300">{source}</span>
+                                <span className="font-semibold text-slate-100">
+                                  {count}
+                                </span>
+                              </div>
+                            )
+                          )}
+                        </div>
+                      </>
+                    )}
+
+                    <div className="mt-5 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+                      <p className="font-semibold text-emerald-400">
+                        Safety Status
+                      </p>
+                      <p className="mt-2 text-slate-300">
+                        Read-only: {matching.readOnly === true ? "Yes" : "Not confirmed"}
+                      </p>
+                      <p className="text-slate-300">
+                        Database writes: {matching.databaseWrites ?? "Not reported"}
+                      </p>
+                      <p className="text-slate-300">
+                        Automatically verified: {matching.verified ?? 0}
+                      </p>
+                      <p className="text-slate-300">
+                        Automatically linked: {matching.linked ?? 0}
+                      </p>
+                      <p className="text-slate-300">
+                        Automatically published: {matching.published ?? 0}
+                      </p>
+                    </div>
                   </>
                 ) : (
                   <p className="mt-2 text-amber-400">
-                    Matching failed: {result.matching?.error ?? "No matching result returned."}
+                    Matching failed:{" "}
+                    {result.matching?.error ??
+                      "No matching result returned."}
                   </p>
                 )}
               </div>

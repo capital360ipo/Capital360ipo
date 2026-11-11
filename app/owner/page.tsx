@@ -7,6 +7,7 @@ import NseCsvImport from "./nse-csv-import";
 import IpoLifecycleButton from "./ipo-lifecycle-button";
 import NseAttachmentParserButton from "./nse-attachment-parser-button";
 import NseListingCollectorButton from "./nse-listing-collector-button";
+import NseIpoTrackerPreview from "./nse-ipo-tracker-preview";
 
 export default async function OwnerDashboard() {
   const { user, profile } = await requireOwner();
@@ -65,6 +66,7 @@ export default async function OwnerDashboard() {
             <NseAttachmentParserButton />
             <IpoLifecycleButton />
             <NseListingCollectorButton />
+            <NseIpoTrackerPreview />
           </div>
         </section>
 

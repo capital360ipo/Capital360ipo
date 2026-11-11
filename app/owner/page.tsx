@@ -1,4 +1,3 @@
-
 import Link from "next/link";
 import { requireOwner } from "@/lib/require-owner";
 import StaffForm from "./staff-form";
@@ -7,6 +6,7 @@ import NseIpoCollectorButton from "./nse-ipo-collector-button";
 import NseCsvImport from "./nse-csv-import";
 import IpoLifecycleButton from "./ipo-lifecycle-button";
 import NseAttachmentParserButton from "./nse-attachment-parser-button";
+import NseListingCollectorButton from "./nse-listing-collector-button";
 
 export default async function OwnerDashboard() {
   const { user, profile } = await requireOwner();
@@ -64,6 +64,7 @@ export default async function OwnerDashboard() {
             <NseCsvImport />
             <NseAttachmentParserButton />
             <IpoLifecycleButton />
+            <NseListingCollectorButton />
           </div>
         </section>
 

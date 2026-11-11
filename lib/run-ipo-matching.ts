@@ -11,15 +11,31 @@ const PAGE_SIZE = 500;
 const MAX_RECORDS = 5000;
 const MAX_COMPARISONS = 500000;
 const MAX_SAMPLE_PAIRS = 100;
+const MAX_NO_TOKEN_SAMPLES = 50;
 
 const GENERIC_WORDS = new Set([
-  "india", "indian", "industries", "industry",
-  "technology", "technologies", "services",
-  "solutions", "global", "international",
-  "limited", "ltd", "private", "pvt",
-  "company", "corporation", "corporate",
-  "group", "holdings", "holding",
-  "enterprises", "enterprise",
+  "india",
+  "indian",
+  "industries",
+  "industry",
+  "technology",
+  "technologies",
+  "services",
+  "solutions",
+  "global",
+  "international",
+  "limited",
+  "ltd",
+  "private",
+  "pvt",
+  "company",
+  "corporation",
+  "corporate",
+  "group",
+  "holdings",
+  "holding",
+  "enterprises",
+  "enterprise",
 ]);
 
 type QueueRecord = {
@@ -27,6 +43,11 @@ type QueueRecord = {
   source_name: string;
   company_name: string;
   ipo_type: string | null;
+};
+
+type PreparedRecord = QueueRecord & {
+  normalized: string;
+  tokens: Set<string>;
 };
 
 type MatchPair = {
@@ -38,6 +59,13 @@ type MatchPair = {
   second_source: string;
   similarity_score: number;
   issue_type: string | null;
+};
+
+type DiagnosticPair = {
+  first_company: string;
+  first_source: string;
+  second_company: string;
+  second_source: string;
 };
 
 function getMatchTokens(name: string): Set<string> {
@@ -52,6 +80,19 @@ function getMatchTokens(name: string): Set<string> {
   );
 }
 
+function hasTokenOverlap(
+  first: Set<string>,
+  second: Set<string>
+): boolean {
+  for (const token of first) {
+    if (second.has(token)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function normalizeIssueType(value: string | null): string {
   return (value || "").trim().toLowerCase();
 }
@@ -60,7 +101,7 @@ export async function runIpoMatching() {
   const records: QueueRecord[] = [];
   let offset = 0;
 
-  // READ ONLY: fetch records from the import queue.
+  // READ ONLY: fetch queue records.
   while (true) {
     const { data, error } = await supabaseAdmin
       .from("ipo_import_queue")
@@ -86,7 +127,7 @@ export async function runIpoMatching() {
     offset += PAGE_SIZE;
   }
 
-  const prepared = records.map((record) => {
+  const prepared: PreparedRecord[] = records.map((record) => {
     const normalized = normalizeCompanyName(
       record.company_name
     );
@@ -98,63 +139,59 @@ export async function runIpoMatching() {
     };
   });
 
-  const tokenIndex = new Map<string, number[]>();
+  const sourceCounts = new Map<string, number>();
 
-  for (let i = 0; i < prepared.length; i++) {
-    for (const token of prepared[i].tokens) {
-      const existing = tokenIndex.get(token) || [];
-      existing.push(i);
-      tokenIndex.set(token, existing);
-    }
+  for (const record of prepared) {
+    sourceCounts.set(
+      record.source_name,
+      (sourceCounts.get(record.source_name) || 0) + 1
+    );
+  }
+
+  const totalPossiblePairs =
+    (prepared.length * (prepared.length - 1)) / 2;
+
+  let sameSourcePairsExcluded = 0;
+
+  for (const count of sourceCounts.values()) {
+    sameSourcePairsExcluded +=
+      (count * (count - 1)) / 2;
+  }
+
+  const possibleCrossSourcePairs =
+    totalPossiblePairs - sameSourcePairsExcluded;
+
+  if (possibleCrossSourcePairs > MAX_COMPARISONS) {
+    throw new Error(
+      `Cross-source pair limit exceeded. Found ${possibleCrossSourcePairs} possible pairs; safe limit is ${MAX_COMPARISONS}.`
+    );
   }
 
   const bestScores = new Map<string, number>();
   const samplePairs: MatchPair[] = [];
+  const sampleNoTokenOverlapPairs: DiagnosticPair[] = [];
 
-  let candidatePairs = 0;
-  let typeMismatchPairs = 0;
+  let crossSourcePairsConsidered = 0;
   let comparisons = 0;
+  let typeMismatchPairs = 0;
+  let tokenOverlapPairs = 0;
+  let noTokenOverlapPairs = 0;
+  let candidatePairs = 0;
 
+  // Compare every cross-source pair.
+  // Token overlap is diagnostic only; it never blocks comparison.
   for (let i = 0; i < prepared.length; i++) {
     const first = prepared[i];
 
-    if (!first.normalized || first.tokens.size === 0) {
-      continue;
-    }
-
-    const possibleMatches = new Set<number>();
-
-    for (const token of first.tokens) {
-      const indices = tokenIndex.get(token) || [];
-
-      for (const index of indices) {
-        if (index > i) {
-          possibleMatches.add(index);
-        }
-      }
-    }
-
-    for (const j of possibleMatches) {
-      comparisons++;
-
-      if (comparisons > MAX_COMPARISONS) {
-        throw new Error(
-          "Dry run exceeded its safe comparison limit."
-        );
-      }
-
+    for (let j = i + 1; j < prepared.length; j++) {
       const second = prepared[j];
 
+      // Same-source records are excluded before counting.
       if (first.source_name === second.source_name) {
         continue;
       }
 
-      if (
-        !second.normalized ||
-        second.tokens.size === 0
-      ) {
-        continue;
-      }
+      crossSourcePairsConsidered++;
 
       const firstType = normalizeIssueType(first.ipo_type);
       const secondType = normalizeIssueType(second.ipo_type);
@@ -168,6 +205,37 @@ export async function runIpoMatching() {
         continue;
       }
 
+      comparisons++;
+
+      const overlap = hasTokenOverlap(
+        first.tokens,
+        second.tokens
+      );
+
+      if (overlap) {
+        tokenOverlapPairs++;
+      } else {
+        noTokenOverlapPairs++;
+
+        if (
+          sampleNoTokenOverlapPairs.length <
+          MAX_NO_TOKEN_SAMPLES
+        ) {
+          sampleNoTokenOverlapPairs.push({
+            first_company: first.company_name,
+            first_source: first.source_name,
+            second_company: second.company_name,
+            second_source: second.source_name,
+          });
+        }
+      }
+
+      // Name matching is now performed even without token overlap.
+      const score = calculateCompanyNameSimilarity(
+        first.company_name,
+        second.company_name
+      );
+
       if (
         !isStrongCompanyNameMatch(
           first.company_name,
@@ -176,11 +244,6 @@ export async function runIpoMatching() {
       ) {
         continue;
       }
-
-      const score = calculateCompanyNameSimilarity(
-        first.company_name,
-        second.company_name
-      );
 
       candidatePairs++;
 
@@ -209,18 +272,34 @@ export async function runIpoMatching() {
     }
   }
 
-  // No database writes are performed in this function.
+  // READ ONLY: no database writes.
   return {
     mode: "dry_run",
     readOnly: true,
     databaseWrites: 0,
+
     processed: records.length,
+    sourceCounts: Object.fromEntries(sourceCounts),
+
+    totalPossiblePairs,
+    sameSourcePairsExcluded,
+    possibleCrossSourcePairs,
+    crossSourcePairsConsidered,
+
     comparisons,
+    typeMismatchPairs,
+    tokenOverlapPairs,
+    noTokenOverlapPairs,
+
     candidatePairs,
     recordsWithCandidates: bestScores.size,
-    typeMismatchPairs,
+
     samplePairs,
     samplePairsLimit: MAX_SAMPLE_PAIRS,
+
+    sampleNoTokenOverlapPairs,
+    noTokenSampleLimit: MAX_NO_TOKEN_SAMPLES,
+
     verified: 0,
     linked: 0,
     published: 0,

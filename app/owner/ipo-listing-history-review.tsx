@@ -101,8 +101,8 @@ function DetailItem({
   value: string;
 }) {
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-950 p-3">
-      <p className="text-xs text-slate-400">{label}</p>
+    <div className="rounded-lg border border-slate-600 bg-slate-900 p-3">
+      <p className="text-xs text-slate-300">{label}</p>
       <p className="mt-1 break-words text-sm font-semibold text-white">
         {value}
       </p>
@@ -270,7 +270,8 @@ export default function IpoListingHistoryReview() {
         ...previous,
         [record.id]: {
           success: false,
-          message: "Official source URL is required for this evidence type.",
+          message:
+            "Official source URL is required for this evidence type.",
         },
       }));
       return;
@@ -349,8 +350,9 @@ export default function IpoListingHistoryReview() {
     }
   }
 
+  // High contrast input styling for mobile and desktop
   const inputClass =
-    "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-sm text-white outline-none focus:border-emerald-500";
+    "w-full rounded-lg border border-slate-500 bg-slate-800 px-3 py-3 text-sm !text-white placeholder:!text-slate-400 outline-none [color-scheme:dark] focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60";
 
   return (
     <section className="rounded-2xl border border-slate-700 bg-slate-900 p-5">
@@ -359,7 +361,7 @@ export default function IpoListingHistoryReview() {
           <h2 className="text-xl font-bold text-white">
             IPO Listing History Review
           </h2>
-          <p className="mt-1 text-sm text-slate-400">
+          <p className="mt-1 text-sm text-slate-300">
             Review imported NSE listing records and submit official evidence.
           </p>
         </div>
@@ -371,21 +373,21 @@ export default function IpoListingHistoryReview() {
 
       <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <div className="rounded-xl bg-slate-950 p-4">
-          <p className="text-xs text-slate-400">Database Records</p>
+          <p className="text-xs text-slate-300">Database Records</p>
           <p className="mt-1 text-2xl font-bold text-white">
             {total}
           </p>
         </div>
 
         <div className="rounded-xl bg-slate-950 p-4">
-          <p className="text-xs text-slate-400">Loaded Records</p>
+          <p className="text-xs text-slate-300">Loaded Records</p>
           <p className="mt-1 text-2xl font-bold text-white">
             {records.length}
           </p>
         </div>
 
         <div className="rounded-xl bg-slate-950 p-4">
-          <p className="text-xs text-slate-400">Filtered Results</p>
+          <p className="text-xs text-slate-300">Filtered Results</p>
           <p className="mt-1 text-2xl font-bold text-white">
             {filteredRecords.length}
           </p>
@@ -407,7 +409,7 @@ export default function IpoListingHistoryReview() {
       </div>
 
       {loading && (
-        <p className="py-8 text-center text-sm text-slate-400">
+        <p className="py-8 text-center text-sm text-slate-300">
           Loading listing records...
         </p>
       )}
@@ -422,7 +424,7 @@ export default function IpoListingHistoryReview() {
         <>
           <div className="mt-5 overflow-x-auto">
             <table className="w-full min-w-[950px] text-left text-sm">
-              <thead className="border-b border-slate-700 text-xs text-slate-400">
+              <thead className="border-b border-slate-700 text-xs text-slate-300">
                 <tr>
                   <th className="px-3 py-3">Company / Symbol</th>
                   <th className="px-3 py-3">Listing Date</th>
@@ -451,32 +453,32 @@ export default function IpoListingHistoryReview() {
                           <p className="font-semibold text-white">
                             {record.company_name}
                           </p>
-                          <p className="mt-1 text-xs text-slate-400">
+                          <p className="mt-1 text-xs text-slate-300">
                             {record.symbol}
                           </p>
                         </td>
 
-                        <td className="px-3 py-4 text-slate-300">
+                        <td className="px-3 py-4 text-slate-200">
                           {formatDate(record.listing_date)}
                         </td>
 
-                        <td className="px-3 py-4 text-slate-300">
+                        <td className="px-3 py-4 text-slate-200">
                           {formatPrice(record.issue_price)}
                         </td>
 
-                        <td className="px-3 py-4 text-slate-300">
+                        <td className="px-3 py-4 text-slate-200">
                           {formatPrice(record.listing_day_close)}
                         </td>
 
-                        <td className="px-3 py-4 text-slate-300">
+                        <td className="px-3 py-4 text-slate-200">
                           {formatPercent(record.listing_day_gain_percent)}
                         </td>
 
-                        <td className="px-3 py-4 text-slate-300">
+                        <td className="px-3 py-4 text-slate-200">
                           {formatPrice(record.ltp)}
                         </td>
 
-                        <td className="px-3 py-4 text-slate-300">
+                        <td className="px-3 py-4 text-slate-200">
                           {formatPercent(record.current_gain_percent)}
                         </td>
 
@@ -563,11 +565,11 @@ export default function IpoListingHistoryReview() {
                                 />
                               </div>
 
-                              <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+                              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
                                 <p className="text-sm font-semibold text-amber-300">
                                   Verification Required
                                 </p>
-                                <p className="mt-1 text-xs leading-5 text-slate-300">
+                                <p className="mt-1 text-xs leading-5 text-slate-200">
                                   This listing record has not yet been
                                   independently verified against official
                                   identity evidence. Adding evidence does not
@@ -575,12 +577,12 @@ export default function IpoListingHistoryReview() {
                                 </p>
                               </div>
 
-                              <div className="rounded-xl border border-slate-700 bg-slate-900 p-4">
+                              <div className="rounded-xl border border-slate-600 bg-slate-900 p-4">
                                 <h3 className="text-base font-bold text-white">
                                   Add Official Evidence
                                 </h3>
 
-                                <p className="mt-1 text-xs leading-5 text-slate-400">
+                                <p className="mt-1 text-xs leading-5 text-slate-300">
                                   Submit an official source reference or
                                   supporting information for this listing.
                                   Every submission starts as Unverified.
@@ -593,7 +595,7 @@ export default function IpoListingHistoryReview() {
                                   className="mt-4 space-y-3"
                                 >
                                   <div>
-                                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                                    <label className="mb-1 block text-xs font-medium text-slate-200">
                                       Evidence Type
                                     </label>
 
@@ -628,7 +630,7 @@ export default function IpoListingHistoryReview() {
                                   </div>
 
                                   <div>
-                                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                                    <label className="mb-1 block text-xs font-medium text-slate-200">
                                       Source Name
                                     </label>
                                     <input
@@ -649,7 +651,7 @@ export default function IpoListingHistoryReview() {
                                   </div>
 
                                   <div>
-                                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                                    <label className="mb-1 block text-xs font-medium text-slate-200">
                                       Official Source URL
                                     </label>
                                     <input
@@ -671,7 +673,7 @@ export default function IpoListingHistoryReview() {
 
                                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                                     <div>
-                                      <label className="mb-1 block text-xs font-medium text-slate-300">
+                                      <label className="mb-1 block text-xs font-medium text-slate-200">
                                         Field Name
                                       </label>
                                       <input
@@ -691,7 +693,7 @@ export default function IpoListingHistoryReview() {
                                     </div>
 
                                     <div>
-                                      <label className="mb-1 block text-xs font-medium text-slate-300">
+                                      <label className="mb-1 block text-xs font-medium text-slate-200">
                                         Field Value
                                       </label>
                                       <input
@@ -712,7 +714,7 @@ export default function IpoListingHistoryReview() {
                                   </div>
 
                                   <div>
-                                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                                    <label className="mb-1 block text-xs font-medium text-slate-200">
                                       Issuer Name
                                     </label>
                                     <input
@@ -755,7 +757,7 @@ export default function IpoListingHistoryReview() {
                                 )}
                               </div>
 
-                              <p className="text-xs text-slate-500">
+                              <p className="text-xs text-slate-400">
                                 Record ID: {record.id}
                               </p>
                             </div>
@@ -770,7 +772,7 @@ export default function IpoListingHistoryReview() {
                   <tr>
                     <td
                       colSpan={9}
-                      className="px-3 py-10 text-center text-slate-400"
+                      className="px-3 py-10 text-center text-slate-300"
                     >
                       No listing records found.
                     </td>
@@ -781,7 +783,7 @@ export default function IpoListingHistoryReview() {
           </div>
 
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-slate-300">
               Page {currentPage} of {totalPages}
             </p>
 
@@ -793,7 +795,7 @@ export default function IpoListingHistoryReview() {
                   setPage((value) => value - 1);
                   setExpandedId(null);
                 }}
-                className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-white disabled:opacity-40"
+                className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-40"
               >
                 Previous
               </button>
@@ -805,7 +807,7 @@ export default function IpoListingHistoryReview() {
                   setPage((value) => value + 1);
                   setExpandedId(null);
                 }}
-                className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-white disabled:opacity-40"
+                className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-40"
               >
                 Next
               </button>
@@ -814,7 +816,7 @@ export default function IpoListingHistoryReview() {
         </>
       )}
 
-      <p className="mt-5 text-xs leading-5 text-slate-500">
+      <p className="mt-5 text-xs leading-5 text-slate-400">
         Evidence submissions remain unverified. This screen does not
         approve, reject, verify identity, link IPO Master records,
         or publish listings.

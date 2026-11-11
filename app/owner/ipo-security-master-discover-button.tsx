@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState } from "react";
@@ -6,13 +5,17 @@ import { useState } from "react";
 type DiscoverResult = {
   success?: boolean;
   mode?: string;
-  source?: string;
   pageLength?: number;
-  filenameMatches?: number;
-  snippets?: string[];
+  scriptLength?: number;
+  scriptUrl?: string;
+  htmlButtonMatches?: number;
+  scriptReferenceMatches?: number;
+  htmlContexts?: string[];
+  scriptContexts?: string[];
   databaseWrites?: number;
-  error?: string;
+  filesDownloaded?: number;
   note?: string;
+  error?: string;
 };
 
 export default function IpoSecurityMasterDiscoverButton() {
@@ -57,6 +60,31 @@ export default function IpoSecurityMasterDiscoverButton() {
     }
   }
 
+  function renderContexts(title: string, contexts?: string[]) {
+    if (!contexts || contexts.length === 0) {
+      return (
+        <p className="mt-2 text-sm text-amber-300">
+          No matching references found.
+        </p>
+      );
+    }
+
+    return (
+      <div className="mt-3 space-y-3">
+        <p className="text-sm font-semibold text-white">{title}</p>
+
+        {contexts.map((context, index) => (
+          <pre
+            key={`${title}-${index}`}
+            className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-900 p-3 text-xs leading-5 text-slate-300"
+          >
+            {context}
+          </pre>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <section className="rounded-xl border border-cyan-800 bg-slate-900 p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -65,7 +93,7 @@ export default function IpoSecurityMasterDiscoverButton() {
             NSE Security Master Discovery
           </h3>
           <p className="mt-1 text-sm text-slate-400">
-            Discover official NSE security file references.
+            Inspect official NSE report page and download script.
           </p>
         </div>
 
@@ -84,7 +112,7 @@ export default function IpoSecurityMasterDiscoverButton() {
           {result.success ? (
             <>
               <p className="font-semibold text-emerald-400">
-                Discovery completed
+                NSE Inspection Completed
               </p>
 
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -97,53 +125,65 @@ export default function IpoSecurityMasterDiscoverButton() {
 
                 <div>
                   <p className="text-xs text-slate-400">
-                    Filename Matches
+                    HTML Button Matches
                   </p>
                   <p className="text-sm text-white">
-                    {result.filenameMatches ?? 0}
+                    {result.htmlButtonMatches ?? 0}
                   </p>
                 </div>
 
                 <div>
                   <p className="text-xs text-slate-400">
-                    Page Length
+                    JavaScript Reference Matches
                   </p>
+                  <p className="text-sm text-white">
+                    {result.scriptReferenceMatches ?? 0}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs text-slate-400">HTML Page Length</p>
                   <p className="text-sm text-white">
                     {result.pageLength ?? 0} characters
                   </p>
                 </div>
 
                 <div>
-                  <p className="text-xs text-slate-400">
-                    Database Writes
+                  <p className="text-xs text-slate-400">Script Length</p>
+                  <p className="text-sm text-white">
+                    {result.scriptLength ?? 0} characters
                   </p>
+                </div>
+
+                <div>
+                  <p className="text-xs text-slate-400">Database Writes</p>
                   <p className="text-sm text-white">
                     {result.databaseWrites ?? 0}
                   </p>
                 </div>
+
+                <div>
+                  <p className="text-xs text-slate-400">Files Downloaded</p>
+                  <p className="text-sm text-white">
+                    {result.filesDownloaded ?? 0}
+                  </p>
+                </div>
               </div>
 
-              {result.snippets && result.snippets.length > 0 && (
-                <div className="mt-4 space-y-3">
-                  <p className="text-sm font-semibold text-white">
-                    Discovered References
-                  </p>
-
-                  {result.snippets.map((snippet, index) => (
-                    <pre
-                      key={index}
-                      className="overflow-x-auto whitespace-pre-wrap break-all rounded-lg bg-slate-900 p-3 text-xs text-slate-300"
-                    >
-                      {snippet}
-                    </pre>
-                  ))}
-                </div>
+              {result.scriptUrl && (
+                <p className="mt-4 break-all text-xs text-slate-400">
+                  Script: {result.scriptUrl}
+                </p>
               )}
 
-              {result.snippets?.length === 0 && (
-                <p className="mt-3 text-sm text-amber-300">
-                  No matching filename found in the returned page.
-                </p>
+              {renderContexts(
+                "HTML Button References",
+                result.htmlContexts
+              )}
+
+              {renderContexts(
+                "JavaScript Download References",
+                result.scriptContexts
               )}
 
               <p className="mt-4 text-xs text-slate-400">

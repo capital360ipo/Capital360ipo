@@ -9,6 +9,11 @@ export const dynamic = "force-dynamic";
 const NSE_PAGE = "https://www.nseindia.com/all-reports";
 const NSE_HOST = "www.nseindia.com";
 
+const TARGET_SCRIPTS = [
+  "https://www.nseindia.com/assets/js/nse-min.js?v=06112026",
+  "https://www.nseindia.com/dist/js/components/quick-links.js?v=06112026",
+];
+
 const HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
@@ -42,7 +47,7 @@ async function fetchText(url: string) {
     method: "GET",
     cache: "no-store",
     redirect: "error",
-    signal: AbortSignal.timeout(12000),
+    signal: AbortSignal.timeout(15000),
     headers: HEADERS,
   });
 
@@ -59,46 +64,23 @@ async function fetchText(url: string) {
   return content;
 }
 
-function findAllReportsScript(html: string) {
-  const tags = html.match(/<script\b[^>]*>/gi) || [];
-
-  for (const tag of tags) {
-    const match = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
-    if (!match) continue;
-
-    try {
-      const url = new URL(match[1], NSE_PAGE).toString();
-
-      if (
-        isNseUrl(url) &&
-        /\/all-reports\.js(?:[?#]|$)/i.test(url)
-      ) {
-        return url;
-      }
-    } catch {
-      // Ignore invalid script URLs.
-    }
-  }
-
-  return null;
-}
-
-function extractFocusedContexts(source: string) {
+function extractContexts(source: string, sourceName: string) {
   const terms = [
-    "cr_equity_archives_mii_security_file_nse",
     "SingledownloadReports",
     "downloadReports",
     "genDownloadLink",
     "api/zipem",
     "fileURLs",
-    "reportsDownload",
-    "function download",
-    "function single",
-    "window.open",
+    "function SingledownloadReports",
+    "function downloadReports",
+    "window.SingledownloadReports",
+    "SingledownloadReports =",
+    "downloadReports =",
     "data-link",
   ];
 
   const lower = source.toLowerCase();
+
   const matches: Array<{
     term: string;
     position: number;
@@ -109,11 +91,16 @@ function extractFocusedContexts(source: string) {
     let position = 0;
     let count = 0;
 
-    while (count < 5) {
+    while (count < 12) {
       const index = lower.indexOf(search, position);
+
       if (index === -1) break;
 
-      matches.push({ term, position: index });
+      matches.push({
+        term,
+        position: index,
+      });
+
       position = index + search.length;
       count++;
     }
@@ -125,14 +112,13 @@ function extractFocusedContexts(source: string) {
   let lastEnd = -1;
 
   for (const match of matches) {
-    const start = Math.max(0, match.position - 900);
-    const end = Math.min(source.length, match.position + 2200);
+    const start = Math.max(0, match.position - 1200);
+    const end = Math.min(source.length, match.position + 3000);
 
-    // Avoid returning the same surrounding code repeatedly.
-    if (start < lastEnd - 250) continue;
+    if (start < lastEnd - 300) continue;
 
     results.push(
-      `SOURCE: NSE all-reports.js\n` +
+      `SOURCE: ${sourceName}\n` +
         `MATCH: ${match.term}\n` +
         `POSITION: ${match.position}\n\n` +
         source.slice(start, end)
@@ -140,7 +126,7 @@ function extractFocusedContexts(source: string) {
 
     lastEnd = end;
 
-    if (results.length >= 25) break;
+    if (results.length >= 30) break;
   }
 
   return results;
@@ -163,48 +149,77 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    // Confirm the NSE report page is reachable.
     const html = await fetchText(NSE_PAGE);
 
     if (html.length < 1000) {
-      throw new Error("NSE returned an incomplete page.");
+      throw new Error("NSE returned an incomplete report page.");
     }
 
-    const scriptUrl = findAllReportsScript(html);
+    const scriptResults = await Promise.all(
+      TARGET_SCRIPTS.map(async (url) => {
+        try {
+          const source = await fetchText(url);
 
-    if (!scriptUrl) {
-      throw new Error(
-        "NSE all-reports.js script was not found in the page."
-      );
-    }
+          if (source.length < 1000) {
+            throw new Error("Script appears incomplete.");
+          }
 
-    const source = await fetchText(scriptUrl);
-
-    if (source.length < 1000) {
-      throw new Error("NSE all-reports.js appears incomplete.");
-    }
-
-    const scriptContexts = extractFocusedContexts(source);
+          return {
+            url,
+            success: true,
+            length: source.length,
+            contexts: extractContexts(source, url),
+            error: null,
+          };
+        } catch (error) {
+          return {
+            url,
+            success: false,
+            length: 0,
+            contexts: [],
+            error:
+              error instanceof Error
+                ? error.message
+                : "Script inspection failed.",
+          };
+        }
+      })
+    );
 
     return jsonResponse({
       success: true,
-      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V7",
+      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V8",
       pageLength: html.length,
-      scriptUrl,
-      scriptLength: source.length,
-      focusedMatchCount: scriptContexts.length,
-      scriptContexts,
+      scriptsInspected: scriptResults.length,
+      scriptsFetched: scriptResults.filter(
+        (item) => item.success
+      ).length,
+      scriptsFailed: scriptResults.filter(
+        (item) => !item.success
+      ).length,
+      scriptInventory: scriptResults.map((item) => ({
+        url: item.url,
+        success: item.success,
+        length: item.length,
+        matches: item.contexts.length,
+        error: item.error,
+      })),
+      scriptContexts: scriptResults.flatMap(
+        (item) => item.contexts
+      ),
       databaseWrites: 0,
       filesDownloaded: 0,
       note:
-        "Only the NSE all-reports.js file was inspected for download functions and endpoint references. No download endpoint was called, no files were downloaded and no database records were modified.",
+        "Only two NSE JavaScript files were inspected. No download endpoint was called, no files were downloaded and no database records were modified.",
     });
   } catch (error) {
     const message =
       error instanceof Error
         ? error.message
-        : "Unknown NSE V7 inspection error.";
+        : "Unknown NSE V8 inspection error.";
 
-    console.error("NSE V7 inspection failed:", message);
+    console.error("NSE V8 inspection failed:", message);
 
     return jsonResponse(
       {

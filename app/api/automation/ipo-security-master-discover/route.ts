@@ -1,4 +1,3 @@
-
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -7,227 +6,240 @@ import { requireApiRole } from "@/lib/require-api-role";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const NSE_PAGE = "https://www.nseindia.com/all-reports";
-const NSE_HOST = "www.nseindia.com";
+const NSE_URL = "https://www.nseindia.com/all-reports";
 
-const TARGET_SCRIPTS = [
-  "https://www.nseindia.com/assets/js/nse-min.js?v=06112026",
-  "https://www.nseindia.com/dist/js/components/quick-links.js?v=06112026",
-];
+const SCRIPT_URL =
+  "https://www.nseindia.com/dist/js/sections/all-reports.js?v=06112026";
 
 const HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-  Accept: "*/*",
+  Accept: "text/html,application/javascript,*/*",
   "Accept-Language": "en-US,en;q=0.9",
-  Referer: NSE_PAGE,
+  Referer: NSE_URL,
 };
 
 function jsonResponse(body: unknown, status = 200) {
-  return NextResponse.json(body, {
-    status,
-    headers: { "Cache-Control": "no-store" },
-  });
+  return NextResponse.json(body, { status });
 }
 
-function isNseUrl(value: string) {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === NSE_HOST;
-  } catch {
-    return false;
-  }
-}
-
-async function fetchText(url: string) {
-  if (!isNseUrl(url)) {
-    throw new Error("Blocked non-NSE resource.");
-  }
-
-  const response = await fetch(url, {
-    method: "GET",
-    cache: "no-store",
-    redirect: "error",
-    signal: AbortSignal.timeout(15000),
-    headers: HEADERS,
-  });
-
-  if (!response.ok) {
-    throw new Error(`NSE returned HTTP ${response.status}`);
-  }
-
-  const content = await response.text();
-
-  if (!content) {
-    throw new Error("NSE returned an empty response.");
-  }
-
-  return content;
-}
-
-function extractContexts(source: string, sourceName: string) {
-  const terms = [
-    "function fileDownload",
-    "fileDownload =",
-    "fileDownload(",
-    "fileDownload:",
-    "downloadData",
-    "SingledownloadReports",
-    "api/zipem",
-    "fileURLs",
-    "window.open",
-    "fetch(",
-    "$.ajax",
-    "XMLHttpRequest",
-    "B.get(",
-    "B.post(",
-  ];
-
-  const lower = source.toLowerCase();
-
-  const matches: Array<{
+function extractContexts(
+  source: string,
+  terms: string[],
+  before = 900,
+  after = 1800,
+  maxResults = 35
+) {
+  const results: {
     term: string;
     position: number;
-  }> = [];
+    context: string;
+  }[] = [];
+
+  const seen = new Set<string>();
 
   for (const term of terms) {
-    const search = term.toLowerCase();
+    const lowerSource = source.toLowerCase();
+    const lowerTerm = term.toLowerCase();
     let position = 0;
-    let count = 0;
 
-    while (count < 20) {
-      const index = lower.indexOf(search, position);
+    while (position < source.length) {
+      const found = lowerSource.indexOf(lowerTerm, position);
 
-      if (index === -1) break;
+      if (found === -1) break;
 
-      matches.push({
-        term,
-        position: index,
-      });
+      const start = Math.max(0, found - before);
+      const end = Math.min(source.length, found + term.length + after);
 
-      position = index + search.length;
-      count++;
+      const context = source.slice(start, end);
+      const key = `${found}:${term}`;
+
+      if (!seen.has(key)) {
+        seen.add(key);
+
+        results.push({
+          term,
+          position: found,
+          context,
+        });
+      }
+
+      position = found + term.length;
+
+      if (results.length >= maxResults) {
+        return results;
+      }
     }
-  }
-
-  matches.sort((a, b) => a.position - b.position);
-
-  const results: string[] = [];
-  let lastEnd = -1;
-
-  for (const match of matches) {
-    const start = Math.max(0, match.position - 1800);
-    const end = Math.min(source.length, match.position + 4500);
-
-    if (start < lastEnd - 400) continue;
-
-    results.push(
-      `SOURCE: ${sourceName}\n` +
-        `MATCH: ${match.term}\n` +
-        `POSITION: ${match.position}\n\n` +
-        source.slice(start, end)
-    );
-
-    lastEnd = end;
-
-    if (results.length >= 35) break;
   }
 
   return results;
 }
 
-export async function POST(request: NextRequest) {
-  const origin = request.headers.get("origin");
-
-  if (!origin || origin !== request.nextUrl.origin) {
-    return jsonResponse(
-      { success: false, error: "Invalid request origin." },
-      403
-    );
-  }
-
-  const auth = await requireApiRole(["owner", "admin"]);
-
-  if (!auth.authorized) {
-    return auth.response;
-  }
+async function fetchNseText(url: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
 
   try {
-    const html = await fetchText(NSE_PAGE);
+    const response = await fetch(url, {
+      method: "GET",
+      headers: HEADERS,
+      cache: "no-store",
+      redirect: "error",
+      signal: controller.signal,
+    });
 
-    if (html.length < 1000) {
-      throw new Error("NSE returned an incomplete report page.");
+    const text = await response.text();
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      length: text.length,
+      text,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const origin = request.headers.get("origin");
+
+    if (origin !== request.nextUrl.origin) {
+      return jsonResponse(
+        { success: false, error: "Invalid request origin." },
+        403
+      );
     }
 
-    const scriptResults = await Promise.all(
-      TARGET_SCRIPTS.map(async (url) => {
-        try {
-          const source = await fetchText(url);
+    const auth = await requireApiRole(["owner", "admin"]);
 
-          if (source.length < 1000) {
-            throw new Error("Script appears incomplete.");
-          }
+    if (!auth.authorized) {
+      return auth.response;
+    }
 
-          return {
-            url,
-            success: true,
-            length: source.length,
-            contexts: extractContexts(source, url),
-            error: null,
-          };
-        } catch (error) {
-          return {
-            url,
-            success: false,
-            length: 0,
-            contexts: [],
-            error:
-              error instanceof Error
-                ? error.message
-                : "Script inspection failed.",
-          };
-        }
-      })
+    const page = await fetchNseText(NSE_URL);
+
+    if (!page.ok || page.length < 1000) {
+      return jsonResponse(
+        {
+          success: false,
+          error: "NSE All Reports page could not be inspected.",
+          httpStatus: page.status,
+          htmlLength: page.length,
+        },
+        502
+      );
+    }
+
+    const script = await fetchNseText(SCRIPT_URL);
+
+    if (!script.ok || script.length < 1000) {
+      return jsonResponse(
+        {
+          success: false,
+          error: "NSE all-reports.js could not be inspected.",
+          httpStatus: script.status,
+          scriptLength: script.length,
+        },
+        502
+      );
+    }
+
+    const htmlTerms = [
+      "cr_equity_archives",
+      "cr_equity_archives_mii_security_file_nse",
+      "mii_security_file_nse",
+      "all-reports.js",
+      "reportsDownload",
+      "NSE_CM_security",
+    ];
+
+    const jsTerms = [
+      "cr_equity_archives_mii_security_file_nse",
+      "cr_equity_archives_mii_security_file_nse_bse",
+      "SingledownloadReports",
+      "downloadReports",
+      "fileDownload",
+      "filePath",
+      "fileActlName",
+      "displayName",
+      "reportsDownload",
+      "api/reports",
+      "api/zipem",
+      "archives",
+      "reportDate",
+      "B.get(",
+      "B.post(",
+      "fetch(",
+      "$.ajax",
+      "XMLHttpRequest",
+      "getReport",
+      "reportData",
+      "reportList",
+    ];
+
+    const htmlContexts = extractContexts(
+      page.text,
+      htmlTerms,
+      500,
+      1000,
+      25
     );
+
+    const jsContexts = extractContexts(
+      script.text,
+      jsTerms,
+      1200,
+      2600,
+      45
+    );
+
+    const filenamePattern =
+      /NSE_CM_security_[0-9]{8}\.csv\.gz/gi;
+
+    const filenames = [
+      ...new Set(script.text.match(filenamePattern) || []),
+    ];
 
     return jsonResponse({
       success: true,
-      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V9",
-      pageLength: html.length,
-      scriptsInspected: scriptResults.length,
-      scriptsFetched: scriptResults.filter(
-        (item) => item.success
-      ).length,
-      scriptsFailed: scriptResults.filter(
-        (item) => !item.success
-      ).length,
-      scriptInventory: scriptResults.map((item) => ({
-        url: item.url,
-        success: item.success,
-        length: item.length,
-        matches: item.contexts.length,
-        error: item.error,
-      })),
-      scriptContexts: scriptResults.flatMap(
-        (item) => item.contexts
-      ),
-      databaseWrites: 0,
-      filesDownloaded: 0,
-      note:
-        "Only two NSE JavaScript files were inspected for download logic. No download endpoint was called, no files were downloaded and no database records were modified.",
+      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V10",
+
+      inspection: {
+        pageUrl: NSE_URL,
+        scriptUrl: SCRIPT_URL,
+        htmlLength: page.length,
+        scriptLength: script.length,
+        htmlHttpStatus: page.status,
+        scriptHttpStatus: script.status,
+      },
+
+      htmlContexts,
+      javascriptContexts: jsContexts,
+
+      filenameMatches: filenames,
+
+      safety: {
+        databaseWrites: 0,
+        filesDownloaded: 0,
+        externalDownloadEndpointsCalled: 0,
+        databaseModified: false,
+      },
+
+      nextStep:
+        "Inspect report metadata source and exact Security Master file URL before any download.",
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Unknown NSE V9 inspection error.";
-
-    console.error("NSE V9 inspection failed:", message);
+    console.error("NSE Security Master V10 inspection error:", error);
 
     return jsonResponse(
       {
         success: false,
-        error: message,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown NSE inspection error",
         databaseWrites: 0,
         filesDownloaded: 0,
       },

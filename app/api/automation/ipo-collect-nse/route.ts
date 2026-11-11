@@ -1,6 +1,5 @@
 import "server-only";
 
-import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { requireApiRole } from "@/lib/require-api-role";
@@ -123,7 +122,6 @@ function parseListings(html: string): Listing[] {
       continue;
     }
 
-    // Bonds and other non-equity instruments are excluded.
     if (!["equity", "sme"].includes(securityType.toLowerCase())) {
       continue;
     }
@@ -131,19 +129,13 @@ function parseListings(html: string): Listing[] {
     if (!/^[A-Z0-9._&-]{1,30}$/.test(symbol)) continue;
     if (!/^[A-Z]{2}[A-Z0-9]{10}$/.test(isin)) continue;
 
-    // Debt-like series are not treated as IPO equity listings.
     if (["N0", "N1", "N2", "N3"].includes(series)) continue;
 
-    let ipoType: "SME" | "Mainboard";
-
-    if (
+    const ipoType: "SME" | "Mainboard" =
       securityType.toLowerCase() === "sme" ||
       ["ST", "SM"].includes(series)
-    ) {
-      ipoType = "SME";
-    } else {
-      ipoType = "Mainboard";
-    }
+        ? "SME"
+        : "Mainboard";
 
     listings.push({
       listingDate,
@@ -159,24 +151,7 @@ function parseListings(html: string): Listing[] {
   return listings;
 }
 
-async function writeLog(
-  status: "success" | "failed",
-  message: string
-) {
-  const { error } = await supabaseAdmin
-    .from("automation_logs")
-    .insert({
-      task_name: "NSE Recent Equity Listing Collection",
-      status,
-      message: message.slice(0, 500),
-    });
-
-  if (error) {
-    console.error("NSE listing log failed:", error.message);
-  }
-}
-
-async function collectListings() {
+async function runDryRun() {
   const response = await fetch(NSE_URL, {
     method: "GET",
     cache: "no-store",
@@ -199,11 +174,11 @@ async function collectListings() {
 
   if (listings.length === 0) {
     throw new Error(
-      "No Equity listing rows parsed. NSE page structure or response needs verification."
+      "No equity listing rows parsed. NSE page structure needs verification."
     );
   }
 
-  // Only pending/approved IPO queue records are considered.
+  // READ ONLY: Fetch existing IPO queue records.
   const { data: queueRows, error: queueError } =
     await supabaseAdmin
       .from("ipo_import_queue")
@@ -219,157 +194,87 @@ async function collectListings() {
 
   const queue = (queueRows || []) as QueueRecord[];
 
-  let detected = listings.length;
   let matched = 0;
   let unmatched = 0;
-  let evidenceInserted = 0;
-  let evidenceDuplicates = 0;
   let ambiguous = 0;
 
-  for (const listing of listings) {
-    const normalizedListingName = normalizeCompanyName(
+  const preview = listings.map((listing) => {
+    const normalizedName = normalizeCompanyName(
       listing.companyName
     );
 
     const possibleMatches = queue.filter((item) => {
       if (!item.ipo_type) return false;
 
-      const sameName =
-        normalizeCompanyName(item.company_name) ===
-        normalizedListingName;
-
-      const sameType =
-        item.ipo_type.toLowerCase() ===
-        listing.ipoType.toLowerCase();
-
-      return sameName && sameType;
+      return (
+        normalizeCompanyName(item.company_name) === normalizedName &&
+        item.ipo_type.toLowerCase() === listing.ipoType.toLowerCase()
+      );
     });
 
-    // A company name alone is not verified identity.
+    let matchStatus:
+      | "possible_match"
+      | "unmatched"
+      | "ambiguous";
+
+    let matchedQueue: {
+      id: string;
+      companyName: string;
+      candidateId: string | null;
+      reviewStatus: string;
+    } | null = null;
+
     if (possibleMatches.length === 0) {
       unmatched++;
-      continue;
-    }
-
-    // Multiple queue matches require manual resolution.
-    if (possibleMatches.length !== 1) {
+      matchStatus = "unmatched";
+    } else if (possibleMatches.length > 1) {
       ambiguous++;
-      continue;
-    }
-
-    const queueRecord = possibleMatches[0];
-    matched++;
-
-    const contentHash = createHash("sha256")
-      .update(
-        [
-          "NSE_RECENT_LISTING",
-          listing.listingDate,
-          listing.securityType,
-          listing.symbol,
-          listing.companyName,
-          listing.series,
-          listing.isin,
-        ].join("|")
-      )
-      .digest("hex");
-
-    const evidencePayload = {
-      queue_id: queueRecord.id,
-      candidate_id: queueRecord.candidate_id,
-      source_name: "NSE",
-      source_url: NSE_URL,
-      evidence_type: "nse_recent_listing_record",
-      field_name: "listing_date",
-      field_value: listing.listingDate,
-      issuer_name: listing.companyName,
-      is_official_source: true,
-      validation_status: "unverified",
-      content_hash: contentHash,
-      observed_at: new Date().toISOString(),
-      metadata: {
-        security_type: listing.securityType,
-        symbol: listing.symbol,
-        company_name: listing.companyName,
-        series: listing.series,
-        isin: listing.isin,
-        ipo_type: listing.ipoType,
-        lifecycle_stage_proposed: "listed",
-        identity_match_status: "unverified",
-        review_status: "pending_manual_review",
-        source_type: "NSE Recent Listing",
-        automatic_status_change: false,
-      },
-    };
-
-    // Existing unique key prevents duplicate evidence records.
-    const { data, error } = await supabaseAdmin
-      .from("ipo_source_evidence")
-      .upsert(evidencePayload, {
-        onConflict: "queue_id,evidence_type,content_hash",
-        ignoreDuplicates: true,
-      })
-      .select("id");
-
-    if (error) {
-      throw new Error(
-        `Evidence save failed for ${listing.companyName}: ${error.message}`
-      );
-    }
-
-    if (data && data.length > 0) {
-      evidenceInserted++;
+      matchStatus = "ambiguous";
     } else {
-      evidenceDuplicates++;
+      matched++;
+      matchStatus = "possible_match";
+
+      matchedQueue = {
+        id: possibleMatches[0].id,
+        companyName: possibleMatches[0].company_name,
+        candidateId: possibleMatches[0].candidate_id,
+        reviewStatus: possibleMatches[0].review_status,
+      };
     }
-  }
+
+    return {
+      listingDate: listing.listingDate,
+      companyName: listing.companyName,
+      symbol: listing.symbol,
+      isin: listing.isin,
+      series: listing.series,
+      securityType: listing.securityType,
+      ipoType: listing.ipoType,
+      matchStatus,
+      identityVerified: false,
+      matchMethod: "Exact normalized company name + IPO type only",
+      matchedQueue,
+    };
+  });
 
   return {
-    detected,
+    mode: "READ_ONLY_DRY_RUN",
+    detected: listings.length,
     matched,
     unmatched,
     ambiguous,
-    evidenceInserted,
-    evidenceDuplicates,
+    preview: preview.slice(0, 50),
+    previewLimit: 50,
+    queueRecordsChecked: queue.length,
     bondsAndNonEquityExcluded: true,
-    automaticListingUpdates: 0,
+    databaseWrites: 0,
+    evidenceInserted: 0,
+    lifecycleUpdates: 0,
     automaticPublication: 0,
+    identityVerification: 0,
+    note:
+      "Possible matches are based only on company name and IPO type. Symbol and ISIN are displayed for manual identity verification. No database records are changed.",
   };
-}
-
-async function handleCollection() {
-  try {
-    const result = await collectListings();
-
-    const message =
-      `Detected: ${result.detected}; Matched: ${result.matched}; Unmatched: ${result.unmatched}; Ambiguous: ${result.ambiguous}; Evidence inserted: ${result.evidenceInserted}; Evidence duplicates: ${result.evidenceDuplicates}`;
-
-    await writeLog("success", message);
-
-    return jsonResponse({
-      success: true,
-      source: "NSE Recent Listings",
-      collection: result,
-      message,
-    });
-  } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Unknown NSE listing collection error";
-
-    console.error("NSE listing collection failed:", message);
-    await writeLog("failed", message);
-
-    return jsonResponse(
-      {
-        success: false,
-        source: "NSE Recent Listings",
-        error: "NSE listing collection failed. Check server logs.",
-      },
-      502
-    );
-  }
 }
 
 export async function POST(request: NextRequest) {
@@ -388,5 +293,31 @@ export async function POST(request: NextRequest) {
     return auth.response;
   }
 
-  return handleCollection();
+  try {
+    const result = await runDryRun();
+
+    return jsonResponse({
+      success: true,
+      source: "NSE Recent Equity Listings",
+      collection: result,
+      message: "Read-only NSE listing dry run completed.",
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unknown NSE listing dry run error";
+
+    console.error("NSE listing dry run failed:", message);
+
+    return jsonResponse(
+      {
+        success: false,
+        source: "NSE Recent Equity Listings",
+        error: message,
+        databaseWrites: 0,
+      },
+      502
+    );
+  }
 }

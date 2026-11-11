@@ -42,6 +42,31 @@ type EvidenceDraft = {
   issuer_name: string;
 };
 
+type EvidenceRecord = {
+  id: string;
+  listing_history_id: string;
+  source_name: string;
+  source_url: string | null;
+  evidence_type: EvidenceType;
+  field_name: string | null;
+  field_value: string | null;
+  issuer_name: string | null;
+  is_official_source: boolean;
+  validation_status: string;
+  observed_at: string | null;
+  validated_by: string | null;
+  validated_at: string | null;
+  validation_notes: string | null;
+  created_at: string;
+};
+
+type EvidenceApiResult = {
+  success?: boolean;
+  evidence?: EvidenceRecord[];
+  total?: number;
+  error?: string;
+};
+
 type EvidenceResult = {
   success: boolean;
   message: string;
@@ -93,6 +118,36 @@ function formatPercent(value: number | null) {
   return `${Number(value).toFixed(2)}%`;
 }
 
+function safeSourceUrl(value: string | null) {
+  if (!value) return null;
+
+  try {
+    const url = new URL(value);
+
+    if (url.protocol !== "https:") return null;
+
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function getEvidenceStatusClass(status: string) {
+  switch (status) {
+    case "valid":
+      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
+
+    case "invalid":
+      return "border-red-500/30 bg-red-500/10 text-red-300";
+
+    case "conflict":
+      return "border-orange-500/30 bg-orange-500/10 text-orange-300";
+
+    default:
+      return "border-amber-500/30 bg-amber-500/10 text-amber-300";
+  }
+}
+
 function DetailItem({
   label,
   value,
@@ -130,6 +185,22 @@ export default function IpoListingHistoryReview() {
   const [evidenceLoadingId, setEvidenceLoadingId] = useState<
     string | null
   >(null);
+
+  const [evidenceByRecord, setEvidenceByRecord] = useState<
+    Record<string, EvidenceRecord[]>
+  >({});
+
+  const [evidenceLoaded, setEvidenceLoaded] = useState<
+    Record<string, boolean>
+  >({});
+
+  const [evidenceFetchLoading, setEvidenceFetchLoading] = useState<
+    Record<string, boolean>
+  >({});
+
+  const [evidenceFetchErrors, setEvidenceFetchErrors] = useState<
+    Record<string, string>
+  >({});
 
   useEffect(() => {
     let active = true;
@@ -211,8 +282,91 @@ export default function IpoListingHistoryReview() {
     currentPage * PAGE_SIZE
   );
 
+  async function loadEvidence(
+    listingHistoryId: string,
+    force = false
+  ) {
+    if (evidenceFetchLoading[listingHistoryId]) return;
+
+    if (
+      !force &&
+      evidenceLoaded[listingHistoryId]
+    ) {
+      return;
+    }
+
+    setEvidenceFetchLoading((previous) => ({
+      ...previous,
+      [listingHistoryId]: true,
+    }));
+
+    setEvidenceFetchErrors((previous) => {
+      const next = { ...previous };
+      delete next[listingHistoryId];
+      return next;
+    });
+
+    try {
+      const response = await fetch(
+        `/api/automation/ipo-listing-evidence-review?listing_history_id=${encodeURIComponent(listingHistoryId)}`,
+        {
+          method: "GET",
+          credentials: "same-origin",
+          cache: "no-store",
+        }
+      );
+
+      const contentType =
+        response.headers.get("content-type") || "";
+
+      if (!contentType.includes("application/json")) {
+        throw new Error("Unexpected evidence server response.");
+      }
+
+      const data =
+        (await response.json()) as EvidenceApiResult;
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.error || "Unable to load evidence."
+        );
+      }
+
+      setEvidenceByRecord((previous) => ({
+        ...previous,
+        [listingHistoryId]: data.evidence || [],
+      }));
+
+      setEvidenceLoaded((previous) => ({
+        ...previous,
+        [listingHistoryId]: true,
+      }));
+    } catch (err) {
+      setEvidenceFetchErrors((previous) => ({
+        ...previous,
+        [listingHistoryId]:
+          err instanceof Error
+            ? err.message
+            : "Unknown evidence loading error.",
+      }));
+    } finally {
+      setEvidenceFetchLoading((previous) => ({
+        ...previous,
+        [listingHistoryId]: false,
+      }));
+    }
+  }
+
   function toggleDetails(id: string) {
-    setExpandedId((current) => (current === id ? null : id));
+    setExpandedId((current) => {
+      if (current === id) return null;
+
+      return id;
+    });
+
+    if (expandedId !== id) {
+      loadEvidence(id);
+    }
   }
 
   function getDraft(id: string): EvidenceDraft {
@@ -334,6 +488,8 @@ export default function IpoListingHistoryReview() {
         ...previous,
         [record.id]: { ...DEFAULT_EVIDENCE },
       }));
+
+      await loadEvidence(record.id, true);
     } catch (err) {
       setEvidenceResults((previous) => ({
         ...previous,
@@ -350,7 +506,6 @@ export default function IpoListingHistoryReview() {
     }
   }
 
-  // High contrast input styling for mobile and desktop
   const inputClass =
     "w-full rounded-lg border border-slate-500 bg-slate-800 px-3 py-3 text-sm !text-white placeholder:!text-slate-400 outline-none [color-scheme:dark] focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60";
 
@@ -446,6 +601,15 @@ export default function IpoListingHistoryReview() {
                   const isSubmitting =
                     evidenceLoadingId === record.id;
 
+                  const evidence =
+                    evidenceByRecord[record.id] || [];
+
+                  const isEvidenceLoading =
+                    evidenceFetchLoading[record.id] || false;
+
+                  const evidenceError =
+                    evidenceFetchErrors[record.id];
+
                   return (
                     <Fragment key={record.id}>
                       <tr className="hover:bg-slate-800/50">
@@ -515,54 +679,18 @@ export default function IpoListingHistoryReview() {
                               </div>
 
                               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                                <DetailItem
-                                  label="Company Name"
-                                  value={record.company_name}
-                                />
-                                <DetailItem
-                                  label="Trading Symbol"
-                                  value={record.symbol}
-                                />
-                                <DetailItem
-                                  label="Listing Date"
-                                  value={formatDate(record.listing_date)}
-                                />
-                                <DetailItem
-                                  label="Issue Price"
-                                  value={formatPrice(record.issue_price)}
-                                />
-                                <DetailItem
-                                  label="Listing Day Close"
-                                  value={formatPrice(record.listing_day_close)}
-                                />
-                                <DetailItem
-                                  label="Listing Day Gain"
-                                  value={formatPercent(record.listing_day_gain_percent)}
-                                />
-                                <DetailItem
-                                  label="Latest Traded Price (LTP)"
-                                  value={formatPrice(record.ltp)}
-                                />
-                                <DetailItem
-                                  label="Current Gain"
-                                  value={formatPercent(record.current_gain_percent)}
-                                />
-                                <DetailItem
-                                  label="Review Status"
-                                  value={record.review_status}
-                                />
-                                <DetailItem
-                                  label="Data Source"
-                                  value={record.source}
-                                />
-                                <DetailItem
-                                  label="Source Observed At"
-                                  value={formatDateTime(record.source_observed_at)}
-                                />
-                                <DetailItem
-                                  label="Record Imported At"
-                                  value={formatDateTime(record.created_at)}
-                                />
+                                <DetailItem label="Company Name" value={record.company_name} />
+                                <DetailItem label="Trading Symbol" value={record.symbol} />
+                                <DetailItem label="Listing Date" value={formatDate(record.listing_date)} />
+                                <DetailItem label="Issue Price" value={formatPrice(record.issue_price)} />
+                                <DetailItem label="Listing Day Close" value={formatPrice(record.listing_day_close)} />
+                                <DetailItem label="Listing Day Gain" value={formatPercent(record.listing_day_gain_percent)} />
+                                <DetailItem label="Latest Traded Price (LTP)" value={formatPrice(record.ltp)} />
+                                <DetailItem label="Current Gain" value={formatPercent(record.current_gain_percent)} />
+                                <DetailItem label="Review Status" value={record.review_status} />
+                                <DetailItem label="Data Source" value={record.source} />
+                                <DetailItem label="Source Observed At" value={formatDateTime(record.source_observed_at)} />
+                                <DetailItem label="Record Imported At" value={formatDateTime(record.created_at)} />
                               </div>
 
                               <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
@@ -570,28 +698,174 @@ export default function IpoListingHistoryReview() {
                                   Verification Required
                                 </p>
                                 <p className="mt-1 text-xs leading-5 text-slate-200">
-                                  This listing record has not yet been
-                                  independently verified against official
-                                  identity evidence. Adding evidence does not
-                                  approve or publish this listing.
+                                  This listing record has not yet been independently verified against official identity evidence. Adding evidence does not approve or publish this listing.
                                 </p>
                               </div>
 
+                              {/* Evidence Display */}
+                              <div className="rounded-xl border border-slate-600 bg-slate-900 p-4">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div>
+                                    <h3 className="text-base font-bold text-white">
+                                      Submitted Evidence
+                                    </h3>
+                                    <p className="mt-1 text-xs text-slate-300">
+                                      Official source references and verification records.
+                                    </p>
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => loadEvidence(record.id, true)}
+                                    disabled={isEvidenceLoading}
+                                    className="rounded-lg border border-slate-500 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                                  >
+                                    {isEvidenceLoading ? "Refreshing..." : "Refresh Evidence"}
+                                  </button>
+                                </div>
+
+                                {isEvidenceLoading && evidence.length === 0 && (
+                                  <p className="py-6 text-center text-sm text-slate-300">
+                                    Loading evidence...
+                                  </p>
+                                )}
+
+                                {evidenceError && (
+                                  <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+                                    {evidenceError}
+                                  </div>
+                                )}
+
+                                {!isEvidenceLoading &&
+                                  !evidenceError &&
+                                  evidence.length === 0 && (
+                                    <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-4 text-center">
+                                      <p className="text-sm font-semibold text-white">
+                                        No Evidence Submitted
+                                      </p>
+                                      <p className="mt-1 text-xs text-slate-400">
+                                        Evidence has not yet been added for this listing.
+                                      </p>
+                                    </div>
+                                  )}
+
+                                <div className="mt-4 space-y-3">
+                                  {evidence.map((item, index) => {
+                                    const sourceUrl = safeSourceUrl(item.source_url);
+
+                                    return (
+                                      <div
+                                        key={item.id}
+                                        className="rounded-lg border border-slate-700 bg-slate-950 p-4"
+                                      >
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                          <p className="text-sm font-bold text-white">
+                                            Evidence #{evidence.length - index}
+                                          </p>
+
+                                          <span
+                                            className={`rounded-full border px-3 py-1 text-xs font-semibold ${getEvidenceStatusClass(item.validation_status)}`}
+                                          >
+                                            {item.validation_status.toUpperCase()}
+                                          </span>
+                                        </div>
+
+                                        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                          <DetailItem
+                                            label="Source Name"
+                                            value={item.source_name}
+                                          />
+                                          <DetailItem
+                                            label="Evidence Type"
+                                            value={item.evidence_type.replaceAll("_", " ")}
+                                          />
+                                          <DetailItem
+                                            label="Field Name"
+                                            value={item.field_name || "—"}
+                                          />
+                                          <DetailItem
+                                            label="Field Value"
+                                            value={item.field_value || "—"}
+                                          />
+                                          <DetailItem
+                                            label="Issuer Name"
+                                            value={item.issuer_name || "—"}
+                                          />
+                                          <DetailItem
+                                            label="Official Domain Flag"
+                                            value={item.is_official_source ? "Yes — domain match only" : "No / Not established"}
+                                          />
+                                          <DetailItem
+                                            label="Evidence Submitted At"
+                                            value={formatDateTime(item.created_at)}
+                                          />
+                                          <DetailItem
+                                            label="Source Observed At"
+                                            value={formatDateTime(item.observed_at)}
+                                          />
+                                          <DetailItem
+                                            label="Validated At"
+                                            value={formatDateTime(item.validated_at)}
+                                          />
+                                          <DetailItem
+                                            label="Validated By (User ID)"
+                                            value={item.validated_by || "Not validated"}
+                                          />
+                                        </div>
+
+                                        <div className="mt-3">
+                                          <p className="text-xs text-slate-300">
+                                            Source URL
+                                          </p>
+
+                                          {sourceUrl ? (
+                                            <a
+                                              href={sourceUrl}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="mt-1 block break-all text-sm font-medium text-sky-300 underline"
+                                            >
+                                              {sourceUrl}
+                                            </a>
+                                          ) : (
+                                            <p className="mt-1 break-all text-sm text-slate-400">
+                                              {item.source_url || "No source URL"}
+                                            </p>
+                                          )}
+                                        </div>
+
+                                        {item.validation_notes && (
+                                          <div className="mt-3 rounded-lg border border-slate-700 bg-slate-900 p-3">
+                                            <p className="text-xs font-semibold text-slate-300">
+                                              Validation Notes
+                                            </p>
+                                            <p className="mt-1 whitespace-pre-wrap break-words text-sm text-white">
+                                              {item.validation_notes}
+                                            </p>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+
+                                <p className="mt-4 text-xs leading-5 text-slate-400">
+                                  Important: Official domain match does not prove that the document itself verifies the IPO identity. Evidence status is displayed as stored in the database. This screen cannot validate or approve evidence.
+                                </p>
+                              </div>
+
+                              {/* Add Evidence */}
                               <div className="rounded-xl border border-slate-600 bg-slate-900 p-4">
                                 <h3 className="text-base font-bold text-white">
                                   Add Official Evidence
                                 </h3>
 
                                 <p className="mt-1 text-xs leading-5 text-slate-300">
-                                  Submit an official source reference or
-                                  supporting information for this listing.
-                                  Every submission starts as Unverified.
+                                  Submit an official source reference or supporting information. Every new submission starts as Unverified.
                                 </p>
 
                                 <form
-                                  onSubmit={(event) =>
-                                    submitEvidence(event, record)
-                                  }
+                                  onSubmit={(event) => submitEvidence(event, record)}
                                   className="mt-4 space-y-3"
                                 >
                                   <div>
@@ -602,30 +876,16 @@ export default function IpoListingHistoryReview() {
                                     <select
                                       value={draft.evidence_type}
                                       onChange={(event) =>
-                                        updateDraft(
-                                          record.id,
-                                          "evidence_type",
-                                          event.target.value
-                                        )
+                                        updateDraft(record.id, "evidence_type", event.target.value)
                                       }
                                       className={inputClass}
                                       disabled={isSubmitting}
                                     >
-                                      <option value="nse_listing_circular">
-                                        NSE Listing Circular
-                                      </option>
-                                      <option value="nse_security_master">
-                                        NSE Security Master
-                                      </option>
-                                      <option value="sebi_filing">
-                                        SEBI Filing
-                                      </option>
-                                      <option value="issuer_website">
-                                        Issuer Website
-                                      </option>
-                                      <option value="other">
-                                        Other Evidence
-                                      </option>
+                                      <option value="nse_listing_circular">NSE Listing Circular</option>
+                                      <option value="nse_security_master">NSE Security Master</option>
+                                      <option value="sebi_filing">SEBI Filing</option>
+                                      <option value="issuer_website">Issuer Website</option>
+                                      <option value="other">Other Evidence</option>
                                     </select>
                                   </div>
 
@@ -636,11 +896,7 @@ export default function IpoListingHistoryReview() {
                                     <input
                                       value={draft.source_name}
                                       onChange={(event) =>
-                                        updateDraft(
-                                          record.id,
-                                          "source_name",
-                                          event.target.value
-                                        )
+                                        updateDraft(record.id, "source_name", event.target.value)
                                       }
                                       placeholder="Example: NSE"
                                       maxLength={100}
@@ -658,11 +914,7 @@ export default function IpoListingHistoryReview() {
                                       type="url"
                                       value={draft.source_url}
                                       onChange={(event) =>
-                                        updateDraft(
-                                          record.id,
-                                          "source_url",
-                                          event.target.value
-                                        )
+                                        updateDraft(record.id, "source_url", event.target.value)
                                       }
                                       placeholder="https://..."
                                       maxLength={2000}
@@ -679,11 +931,7 @@ export default function IpoListingHistoryReview() {
                                       <input
                                         value={draft.field_name}
                                         onChange={(event) =>
-                                          updateDraft(
-                                            record.id,
-                                            "field_name",
-                                            event.target.value
-                                          )
+                                          updateDraft(record.id, "field_name", event.target.value)
                                         }
                                         placeholder="Example: ISIN"
                                         maxLength={200}
@@ -699,11 +947,7 @@ export default function IpoListingHistoryReview() {
                                       <input
                                         value={draft.field_value}
                                         onChange={(event) =>
-                                          updateDraft(
-                                            record.id,
-                                            "field_value",
-                                            event.target.value
-                                          )
+                                          updateDraft(record.id, "field_value", event.target.value)
                                         }
                                         placeholder="Example: INE..."
                                         maxLength={1000}
@@ -720,11 +964,7 @@ export default function IpoListingHistoryReview() {
                                     <input
                                       value={draft.issuer_name}
                                       onChange={(event) =>
-                                        updateDraft(
-                                          record.id,
-                                          "issuer_name",
-                                          event.target.value
-                                        )
+                                        updateDraft(record.id, "issuer_name", event.target.value)
                                       }
                                       placeholder="Company / Issuer name"
                                       maxLength={250}
@@ -738,9 +978,7 @@ export default function IpoListingHistoryReview() {
                                     disabled={isSubmitting}
                                     className="w-full rounded-lg bg-emerald-600 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
                                   >
-                                    {isSubmitting
-                                      ? "Submitting Evidence..."
-                                      : "Submit Evidence"}
+                                    {isSubmitting ? "Submitting Evidence..." : "Submit Evidence"}
                                   </button>
                                 </form>
 
@@ -770,10 +1008,7 @@ export default function IpoListingHistoryReview() {
 
                 {visibleRecords.length === 0 && (
                   <tr>
-                    <td
-                      colSpan={9}
-                      className="px-3 py-10 text-center text-slate-300"
-                    >
+                    <td colSpan={9} className="px-3 py-10 text-center text-slate-300">
                       No listing records found.
                     </td>
                   </tr>
@@ -817,9 +1052,8 @@ export default function IpoListingHistoryReview() {
       )}
 
       <p className="mt-5 text-xs leading-5 text-slate-400">
-        Evidence submissions remain unverified. This screen does not
-        approve, reject, verify identity, link IPO Master records,
-        or publish listings.
+        Evidence submissions remain unverified. This screen does not approve,
+        reject, verify identity, link IPO Master records, or publish listings.
       </p>
     </section>
   );

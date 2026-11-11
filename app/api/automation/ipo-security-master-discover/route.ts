@@ -26,8 +26,8 @@ function jsonResponse(body: unknown, status = 200) {
 function extractContexts(
   source: string,
   terms: string[],
-  before = 900,
-  after = 1800,
+  before = 1200,
+  after = 2200,
   maxResults = 35
 ) {
   const results: {
@@ -36,10 +36,10 @@ function extractContexts(
     context: string;
   }[] = [];
 
+  const lowerSource = source.toLowerCase();
   const seen = new Set<string>();
 
   for (const term of terms) {
-    const lowerSource = source.toLowerCase();
     const lowerTerm = term.toLowerCase();
     let position = 0;
 
@@ -49,9 +49,11 @@ function extractContexts(
       if (found === -1) break;
 
       const start = Math.max(0, found - before);
-      const end = Math.min(source.length, found + term.length + after);
+      const end = Math.min(
+        source.length,
+        found + term.length + after
+      );
 
-      const context = source.slice(start, end);
       const key = `${found}:${term}`;
 
       if (!seen.has(key)) {
@@ -60,7 +62,7 @@ function extractContexts(
         results.push({
           term,
           position: found,
-          context,
+          context: source.slice(start, end),
         });
       }
 
@@ -146,20 +148,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Exact Security Master IDs are checked first.
+    // This prevents unrelated archive matches from using the result limit.
     const htmlTerms = [
-      "cr_equity_archives",
       "cr_equity_archives_mii_security_file_nse",
+      "cr_equity_archives_mii_security_file_nse_bse",
       "mii_security_file_nse",
-      "all-reports.js",
-      "reportsDownload",
+      "NSE MII Security",
       "NSE_CM_security",
+      "reportsDownload",
+      "cr_equity_archives",
+      "all-reports.js",
     ];
 
     const jsTerms = [
       "cr_equity_archives_mii_security_file_nse",
       "cr_equity_archives_mii_security_file_nse_bse",
       "SingledownloadReports",
-      "downloadReports",
+      "function SingledownloadReports",
+      "function fileDownload",
       "fileDownload",
       "filePath",
       "fileActlName",
@@ -182,9 +189,9 @@ export async function POST(request: NextRequest) {
     const htmlContexts = extractContexts(
       page.text,
       htmlTerms,
-      500,
-      1000,
-      25
+      1800,
+      3000,
+      35
     );
 
     const jsContexts = extractContexts(
@@ -204,7 +211,7 @@ export async function POST(request: NextRequest) {
 
     return jsonResponse({
       success: true,
-      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V10",
+      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V11",
 
       inspection: {
         pageUrl: NSE_URL,
@@ -228,10 +235,10 @@ export async function POST(request: NextRequest) {
       },
 
       nextStep:
-        "Inspect report metadata source and exact Security Master file URL before any download.",
+        "Inspect exact Security Master card metadata and identify its report metadata source before any download.",
     });
   } catch (error) {
-    console.error("NSE Security Master V10 inspection error:", error);
+    console.error("NSE Security Master V11 inspection error:", error);
 
     return jsonResponse(
       {
@@ -242,6 +249,7 @@ export async function POST(request: NextRequest) {
             : "Unknown NSE inspection error",
         databaseWrites: 0,
         filesDownloaded: 0,
+        databaseModified: false,
       },
       502
     );

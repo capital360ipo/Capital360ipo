@@ -1,3 +1,4 @@
+
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -8,8 +9,11 @@ export const dynamic = "force-dynamic";
 
 const NSE_URL = "https://www.nseindia.com/all-reports";
 
-const SCRIPT_URL =
+const REPORTS_SCRIPT =
   "https://www.nseindia.com/dist/js/sections/all-reports.js?v=06112026";
+
+const NSE_MIN_SCRIPT =
+  "https://www.nseindia.com/assets/js/nse-min.js?v=06112026";
 
 const HEADERS = {
   "User-Agent":
@@ -26,9 +30,9 @@ function jsonResponse(body: unknown, status = 200) {
 function extractContexts(
   source: string,
   terms: string[],
-  before = 1200,
-  after = 2200,
-  maxResults = 35
+  before = 1000,
+  after = 1800,
+  maxResults = 30
 ) {
   const results: {
     term: string;
@@ -48,12 +52,6 @@ function extractContexts(
 
       if (found === -1) break;
 
-      const start = Math.max(0, found - before);
-      const end = Math.min(
-        source.length,
-        found + term.length + after
-      );
-
       const key = `${found}:${term}`;
 
       if (!seen.has(key)) {
@@ -62,11 +60,14 @@ function extractContexts(
         results.push({
           term,
           position: found,
-          context: source.slice(start, end),
+          context: source.slice(
+            Math.max(0, found - before),
+            Math.min(source.length, found + term.length + after)
+          ),
         });
       }
 
-      position = found + term.length;
+      position = found + lowerTerm.length;
 
       if (results.length >= maxResults) {
         return results;
@@ -90,7 +91,19 @@ async function fetchNseText(url: string) {
       signal: controller.signal,
     });
 
+    const contentLength = Number(
+      response.headers.get("content-length") || 0
+    );
+
+    if (contentLength > 5 * 1024 * 1024) {
+      throw new Error("NSE inspection resource exceeds 5 MB limit.");
+    }
+
     const text = await response.text();
+
+    if (text.length > 5 * 1024 * 1024) {
+      throw new Error("NSE inspection response exceeds 5 MB limit.");
+    }
 
     return {
       ok: response.ok,
@@ -120,7 +133,12 @@ export async function POST(request: NextRequest) {
       return auth.response;
     }
 
-    const page = await fetchNseText(NSE_URL);
+    // Read-only: inspect NSE page and JavaScript resources only.
+    const [page, reportsScript, nseMinScript] = await Promise.all([
+      fetchNseText(NSE_URL),
+      fetchNseText(REPORTS_SCRIPT),
+      fetchNseText(NSE_MIN_SCRIPT),
+    ]);
 
     if (!page.ok || page.length < 1000) {
       return jsonResponse(
@@ -134,98 +152,138 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const script = await fetchNseText(SCRIPT_URL);
-
-    if (!script.ok || script.length < 1000) {
+    if (!reportsScript.ok || reportsScript.length < 1000) {
       return jsonResponse(
         {
           success: false,
           error: "NSE all-reports.js could not be inspected.",
-          httpStatus: script.status,
-          scriptLength: script.length,
+          httpStatus: reportsScript.status,
+          scriptLength: reportsScript.length,
         },
         502
       );
     }
 
-    // Exact Security Master IDs are checked first.
-    // This prevents unrelated archive matches from using the result limit.
-    const htmlTerms = [
-      "cr_equity_archives_mii_security_file_nse",
-      "cr_equity_archives_mii_security_file_nse_bse",
-      "mii_security_file_nse",
-      "NSE MII Security",
-      "NSE_CM_security",
-      "reportsDownload",
-      "cr_equity_archives",
-      "all-reports.js",
-    ];
-
-    const jsTerms = [
-      "cr_equity_archives_mii_security_file_nse",
-      "cr_equity_archives_mii_security_file_nse_bse",
-      "SingledownloadReports",
-      "function SingledownloadReports",
-      "function fileDownload",
-      "fileDownload",
-      "filePath",
-      "fileActlName",
-      "displayName",
-      "reportsDownload",
-      "api/reports",
-      "api/zipem",
-      "archives",
-      "reportDate",
-      "B.get(",
-      "B.post(",
-      "fetch(",
-      "$.ajax",
-      "XMLHttpRequest",
-      "getReport",
-      "reportData",
-      "reportList",
-    ];
+    if (!nseMinScript.ok || nseMinScript.length < 1000) {
+      return jsonResponse(
+        {
+          success: false,
+          error: "NSE nse-min.js could not be inspected.",
+          httpStatus: nseMinScript.status,
+          scriptLength: nseMinScript.length,
+        },
+        502
+      );
+    }
 
     const htmlContexts = extractContexts(
       page.text,
-      htmlTerms,
+      [
+        "cr_equity_archives_mii_security_file_nse",
+        "cr_equity_archives_mii_security_file_nse_bse",
+        "reportsDownload",
+        "mii_security_file_nse",
+      ],
       1800,
-      3000,
+      2600,
+      12
+    );
+
+    const reportsContexts = extractContexts(
+      reportsScript.text,
+      [
+        "cr_equity_archives_mii_security_file_nse",
+        "SingledownloadReports",
+        "function fileDownload",
+        "fileDownload",
+        "api/reports",
+        "archives",
+      ],
+      1000,
+      1800,
+      15
+    );
+
+    // Report metadata discovery in nse-min.js.
+    const metadataContexts = extractContexts(
+      nseMinScript.text,
+      [
+        "ReportCard",
+        "filePath",
+        "fileActlName",
+        "downloadLink",
+        "data-link",
+        "reportData",
+        "reportList",
+        "getReportData",
+        "reportDetails",
+        "reportMaster",
+        "axios.get",
+        "axios.post",
+        "fetch(",
+        "XMLHttpRequest",
+        "baseURL",
+      ],
+      1400,
+      2200,
       35
     );
 
-    const jsContexts = extractContexts(
-      script.text,
-      jsTerms,
-      1200,
-      2600,
-      45
-    );
+    // Extract possible API path strings from the inspected script.
+    // These are clues only; no endpoint is called.
+    const apiPathPattern =
+      /["'`]([^"'`]{0,180}(?:\/api\/|\/api\/v\d+\/)[^"'`]{0,220})["'`]/gi;
 
+    const apiPathMatches: string[] = [];
+    let match: RegExpExecArray | null;
+
+    while (
+      (match = apiPathPattern.exec(nseMinScript.text)) !== null &&
+      apiPathMatches.length < 40
+    ) {
+      const candidate = match[1];
+
+      if (
+        !apiPathMatches.includes(candidate) &&
+        !candidate.includes("${")
+      ) {
+        apiPathMatches.push(candidate);
+      }
+    }
+
+    // Known filename pattern scan only. No download.
     const filenamePattern =
       /NSE_CM_security_[0-9]{8}\.csv\.gz/gi;
 
-    const filenames = [
-      ...new Set(script.text.match(filenamePattern) || []),
+    const filenameMatches = [
+      ...new Set(
+        (
+          nseMinScript.text.match(filenamePattern) || []
+        )
+      ),
     ];
 
     return jsonResponse({
       success: true,
-      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V11",
+      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V12",
 
       inspection: {
         pageUrl: NSE_URL,
-        scriptUrl: SCRIPT_URL,
+        reportsScriptUrl: REPORTS_SCRIPT,
+        nseMinScriptUrl: NSE_MIN_SCRIPT,
         htmlLength: page.length,
-        scriptLength: script.length,
+        reportsScriptLength: reportsScript.length,
+        nseMinScriptLength: nseMinScript.length,
         htmlHttpStatus: page.status,
-        scriptHttpStatus: script.status,
+        reportsScriptHttpStatus: reportsScript.status,
+        nseMinScriptHttpStatus: nseMinScript.status,
       },
 
       htmlContexts,
-      javascriptContexts: jsContexts,
-
-      filenameMatches: filenames,
+      reportsJavascriptContexts: reportsContexts,
+      metadataContexts,
+      possibleApiPaths: apiPathMatches,
+      filenameMatches,
 
       safety: {
         databaseWrites: 0,
@@ -235,10 +293,10 @@ export async function POST(request: NextRequest) {
       },
 
       nextStep:
-        "Inspect exact Security Master card metadata and identify its report metadata source before any download.",
+        "Inspect ReportCard metadata source and identify the exact NSE Security Master resource before any download.",
     });
   } catch (error) {
-    console.error("NSE Security Master V11 inspection error:", error);
+    console.error("NSE Security Master V12 inspection error:", error);
 
     return jsonResponse(
       {

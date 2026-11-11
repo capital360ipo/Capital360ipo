@@ -12,7 +12,24 @@ export const dynamic = "force-dynamic";
 const SEBI_URL =
   "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListing=yes&sid=3&smid=10&ssid=15";
 
-const SEBI_HOSTS = ["www.sebi.gov.in", "sebi.gov.in"];
+const SEBI_HOSTS = new Set(["www.sebi.gov.in", "sebi.gov.in"]);
+
+type AtomicSaveResult = {
+  success?: boolean;
+  queue_id?: string;
+  queue_inserted?: boolean;
+  queue_duplicate?: boolean;
+  evidence_inserted?: boolean;
+  evidence_duplicate?: boolean;
+  evidence_status?: string;
+};
+
+function jsonResponse(body: unknown, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
 
 function cleanText(value: string): string {
   return value
@@ -29,32 +46,87 @@ function cleanText(value: string): string {
     .trim();
 }
 
+function validDate(year: number, month: number, day: number): boolean {
+  if (
+    year < 1900 ||
+    year > 2100 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1
+  ) {
+    return false;
+  }
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+function formatDate(year: number, month: number, day: number): string {
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 function parseDate(value: string): string | null {
-  const patterns = [
-    /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b/i,
-    /\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\b/i,
-    /\b\d{4}-\d{2}-\d{2}\b/,
-  ];
+  const months: Record<string, number> = {
+    jan: 1,
+    feb: 2,
+    mar: 3,
+    apr: 4,
+    may: 5,
+    jun: 6,
+    jul: 7,
+    aug: 8,
+    sep: 9,
+    oct: 10,
+    nov: 11,
+    dec: 12,
+  };
 
-  for (const pattern of patterns) {
-    const match = value.match(pattern);
-    if (!match) continue;
+  // ISO format: YYYY-MM-DD
+  const iso = value.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
 
-    const date = new Date(match[0]);
+  if (iso) {
+    const year = Number(iso[1]);
+    const month = Number(iso[2]);
+    const day = Number(iso[3]);
 
-    if (Number.isNaN(date.getTime())) continue;
-
-    const isoDate = date.toISOString().slice(0, 10);
-
-    // Reject impossible calendar dates.
-    if (
-      /^\d{4}-\d{2}-\d{2}$/.test(match[0]) &&
-      isoDate !== match[0]
-    ) {
-      continue;
+    if (validDate(year, month, day)) {
+      return formatDate(year, month, day);
     }
+  }
 
-    return isoDate;
+  // Month-first format: Jan 15, 2026
+  const monthFirst = value.match(
+    /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(\d{4})\b/i
+  );
+
+  if (monthFirst) {
+    const month = months[monthFirst[1].slice(0, 3).toLowerCase()];
+    const day = Number(monthFirst[2]);
+    const year = Number(monthFirst[3]);
+
+    if (validDate(year, month, day)) {
+      return formatDate(year, month, day);
+    }
+  }
+
+  // Day-first format: 15 Jan 2026
+  const dayFirst = value.match(
+    /\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})\b/i
+  );
+
+  if (dayFirst) {
+    const day = Number(dayFirst[1]);
+    const month = months[dayFirst[2].slice(0, 3).toLowerCase()];
+    const year = Number(dayFirst[3]);
+
+    if (validDate(year, month, day)) {
+      return formatDate(year, month, day);
+    }
   }
 
   return null;
@@ -92,7 +164,7 @@ function isValidFilingTitle(title: string): boolean {
 function isValidSebiUrl(url: URL): boolean {
   return (
     url.protocol === "https:" &&
-    SEBI_HOSTS.includes(url.hostname) &&
+    SEBI_HOSTS.has(url.hostname) &&
     !url.username &&
     !url.password &&
     !url.port &&
@@ -217,57 +289,6 @@ async function collectIpos() {
         .update(`SEBI|${filing.sourceUrl}`)
         .digest("hex");
 
-      let queueId: string;
-
-      const { data: newQueueRecord, error: queueError } =
-        await supabaseAdmin
-          .from("ipo_import_queue")
-          .insert({
-            source_name: "SEBI",
-            source_url: filing.sourceUrl,
-            external_id: filing.sourceUrl,
-            company_name: filing.companyName,
-            ipo_type: null,
-            drhp_filed_date: filing.filingDate,
-            detected_status: "drhp_filed",
-            raw_payload: {
-              title: filing.title,
-              filing_date: filing.filingDate,
-              source_url: filing.sourceUrl,
-              source: "SEBI",
-            },
-            content_hash: queueHash,
-            review_status: "pending",
-            collected_at: new Date().toISOString(),
-          })
-          .select("id")
-          .single();
-
-      if (queueError?.code === "23505") {
-        duplicates++;
-
-        const { data: existingRecord, error: lookupError } =
-          await supabaseAdmin
-            .from("ipo_import_queue")
-            .select("id")
-            .eq("source_name", "SEBI")
-            .eq("content_hash", queueHash)
-            .maybeSingle();
-
-        if (lookupError || !existingRecord) {
-          throw new Error(
-            "Could not find the existing SEBI queue record."
-          );
-        }
-
-        queueId = existingRecord.id;
-      } else if (queueError || !newQueueRecord) {
-        throw new Error("IPO queue insert failed.");
-      } else {
-        inserted++;
-        queueId = newQueueRecord.id;
-      }
-
       const evidenceHash = createHash("sha256")
         .update(
           [
@@ -280,42 +301,80 @@ async function collectIpos() {
         )
         .digest("hex");
 
-      const { data: evidenceData, error: evidenceError } =
-        await supabaseAdmin
-          .from("ipo_source_evidence")
-          .upsert(
-            {
-              queue_id: queueId,
-              source_name: "SEBI",
-              source_url: filing.sourceUrl,
-              evidence_type: "drhp_filing_listing",
-              field_name: "drhp_filed_date",
-              field_value: filing.filingDate,
-              issuer_name: filing.companyName,
-              is_official_source: true,
-              validation_status: "unverified",
-              content_hash: evidenceHash,
-              observed_at: new Date().toISOString(),
-              metadata: {
-                title: filing.title,
-                listing_page: SEBI_URL,
-                evidence_scope:
-                  "SEBI listing entry detected; document contents not independently validated.",
-              },
-            },
-            {
-              onConflict: "queue_id,evidence_type,content_hash",
-              ignoreDuplicates: true,
-            }
-          )
-          .select("id");
+      const collectedAt = new Date().toISOString();
 
-      if (evidenceError) {
-        throw new Error("SEBI source evidence could not be saved.");
+      const queuePayload = {
+        source_name: "SEBI",
+        source_url: filing.sourceUrl,
+        external_id: filing.sourceUrl,
+        company_name: filing.companyName,
+        ipo_type: null,
+        drhp_filed_date: filing.filingDate,
+        detected_status: "drhp_filed",
+        raw_payload: {
+          title: filing.title,
+          filing_date: filing.filingDate,
+          source_url: filing.sourceUrl,
+          source: "SEBI",
+        },
+        content_hash: queueHash,
+        review_status: "pending",
+        collected_at: collectedAt,
+      };
+
+      const evidencePayload = {
+        source_name: "SEBI",
+        source_url: filing.sourceUrl,
+        evidence_type: "drhp_filing_listing",
+        field_name: "drhp_filed_date",
+        field_value: filing.filingDate,
+        issuer_name: filing.companyName,
+        is_official_source: true,
+        content_hash: evidenceHash,
+        observed_at: collectedAt,
+        metadata: {
+          title: filing.title,
+          listing_page: SEBI_URL,
+          evidence_scope:
+            "SEBI listing entry detected; document contents not independently validated.",
+        },
+      };
+
+      // Queue and evidence are saved in one atomic database transaction.
+      const { data, error } = await supabaseAdmin.rpc(
+        "save_ipo_collection_record",
+        {
+          p_queue: queuePayload,
+          p_evidence: evidencePayload,
+        }
+      );
+
+      if (error) {
+        throw new Error(
+          `SEBI atomic collection failed for ${filing.companyName}: ${error.message}`
+        );
       }
 
-      if (evidenceData && evidenceData.length > 0) {
-        evidenceInserted += evidenceData.length;
+      const result = data as AtomicSaveResult | null;
+
+      if (
+        !result ||
+        result.success !== true ||
+        !result.queue_id
+      ) {
+        throw new Error(
+          `SEBI atomic RPC returned an invalid result for ${filing.companyName}.`
+        );
+      }
+
+      if (result.queue_inserted === true) {
+        inserted++;
+      } else {
+        duplicates++;
+      }
+
+      if (result.evidence_inserted === true) {
+        evidenceInserted++;
       } else {
         evidenceDuplicates++;
       }
@@ -326,8 +385,8 @@ async function collectIpos() {
       `Duplicates: ${duplicates}, Evidence inserted: ${evidenceInserted}, ` +
       `Evidence duplicates: ${evidenceDuplicates}`;
 
-    // Matching is a separate read-only dry run.
-    let matchingResult = null;
+    // Matching remains a separate read-only operation.
+    let matchingResult: unknown = null;
     let matchingError: string | null = null;
 
     try {
@@ -347,44 +406,34 @@ async function collectIpos() {
       );
     }
 
-    // Collection success is logged independently of matching.
     await writeLog(
       "SEBI IPO DRHP Collection",
       "success",
       collectionMessage
     );
 
-    const matchingStatus = matchingError
-      ? "failed"
-      : "completed";
-
-    return NextResponse.json(
-      {
+    return jsonResponse({
+      success: true,
+      status: matchingError ? "partial_success" : "success",
+      collection: {
         success: true,
-        status: matchingError ? "partial_success" : "success",
-        collection: {
-          success: true,
-          detected,
-          inserted,
-          duplicates,
-          evidenceInserted,
-          evidenceDuplicates,
-          message: collectionMessage,
-        },
-        matching: {
-          success: !matchingError,
-          status: matchingStatus,
-          mode: "dry_run",
-          result: matchingResult,
-          error: matchingError,
-        },
-        review_status: "pending",
-        evidence_status: "unverified",
+        detected,
+        inserted,
+        duplicates,
+        evidenceInserted,
+        evidenceDuplicates,
+        message: collectionMessage,
       },
-      {
-        headers: { "Cache-Control": "no-store" },
-      }
-    );
+      matching: {
+        success: !matchingError,
+        status: matchingError ? "failed" : "completed",
+        mode: "dry_run",
+        result: matchingResult,
+        error: matchingError,
+      },
+      review_status: "pending",
+      evidence_status: "unverified",
+    });
   } catch (error) {
     const message =
       error instanceof Error
@@ -399,33 +448,29 @@ async function collectIpos() {
       message
     );
 
-    return NextResponse.json(
+    return jsonResponse(
       {
         success: false,
         status: "failed",
         error: "IPO collection failed. Check server logs.",
       },
-      {
-        status: 502,
-        headers: { "Cache-Control": "no-store" },
-      }
+      502
     );
   }
 }
 
 // Manual collection: Owner/Admin only.
 export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+
+  if (!origin || origin !== request.nextUrl.origin) {
+    return jsonResponse(
+      { success: false, error: "Invalid request origin." },
+      403
+    );
+  }
+
   try {
-    const origin = request.headers.get("origin");
-
-    // Browser manual requests must include the exact same origin.
-    if (!origin || origin !== request.nextUrl.origin) {
-      return NextResponse.json(
-        { success: false, error: "Invalid request origin." },
-        { status: 403, headers: { "Cache-Control": "no-store" } }
-      );
-    }
-
     const auth = await requireApiRole(["owner", "admin"]);
 
     if (!auth.authorized) {
@@ -436,15 +481,12 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("Manual IPO collection authorization failed:", error);
 
-    return NextResponse.json(
+    return jsonResponse(
       {
         success: false,
         error: "Unable to authorize collection request.",
       },
-      {
-        status: 500,
-        headers: { "Cache-Control": "no-store" },
-      }
+      500
     );
   }
 }
@@ -457,14 +499,11 @@ export async function GET(request: NextRequest) {
     !cronSecret ||
     request.headers.get("authorization") !== `Bearer ${cronSecret}`
   ) {
-    return NextResponse.json(
+    return jsonResponse(
       { success: false, error: "Unauthorized cron request." },
-      {
-        status: 401,
-        headers: { "Cache-Control": "no-store" },
-      }
+      401
     );
   }
 
-  return await collectIpos();
+  return collectIpos();
 }

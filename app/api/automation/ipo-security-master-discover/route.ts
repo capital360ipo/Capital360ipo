@@ -27,10 +27,7 @@ function jsonResponse(body: unknown, status = 200) {
 function isNseUrl(value: string) {
   try {
     const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      url.hostname === NSE_HOST
-    );
+    return url.protocol === "https:" && url.hostname === NSE_HOST;
   } catch {
     return false;
   }
@@ -45,7 +42,7 @@ async function fetchText(url: string) {
     method: "GET",
     cache: "no-store",
     redirect: "error",
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(12000),
     headers: HEADERS,
   });
 
@@ -62,64 +59,91 @@ async function fetchText(url: string) {
   return content;
 }
 
-function extractScriptUrls(html: string) {
+function findAllReportsScript(html: string) {
   const tags = html.match(/<script\b[^>]*>/gi) || [];
-  const urls = new Set<string>();
 
   for (const tag of tags) {
     const match = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
-
     if (!match) continue;
 
     try {
       const url = new URL(match[1], NSE_PAGE).toString();
 
-      if (isNseUrl(url) && /\.js(?:[?#]|$)/i.test(url)) {
-        urls.add(url);
+      if (
+        isNseUrl(url) &&
+        /\/all-reports\.js(?:[?#]|$)/i.test(url)
+      ) {
+        return url;
       }
     } catch {
-      // Ignore invalid URLs.
+      // Ignore invalid script URLs.
     }
   }
 
-  return Array.from(urls).slice(0, 20);
+  return null;
 }
 
-function extractContexts(
-  source: string,
-  terms: string[],
-  sourceName: string,
-  maxPerTerm = 3
-) {
-  const results: string[] = [];
+function extractFocusedContexts(source: string) {
+  const terms = [
+    "cr_equity_archives_mii_security_file_nse",
+    "SingledownloadReports",
+    "downloadReports",
+    "genDownloadLink",
+    "api/zipem",
+    "fileURLs",
+    "reportsDownload",
+    "function download",
+    "function single",
+    "window.open",
+    "data-link",
+  ];
+
   const lower = source.toLowerCase();
+  const matches: Array<{
+    term: string;
+    position: number;
+  }> = [];
 
   for (const term of terms) {
     const search = term.toLowerCase();
     let position = 0;
     let count = 0;
 
-    while (count < maxPerTerm) {
+    while (count < 5) {
       const index = lower.indexOf(search, position);
-
       if (index === -1) break;
 
-      results.push(
-        `SOURCE: ${sourceName}\n` +
-        `MATCH: ${term}\n` +
-        `POSITION: ${index}\n\n` +
-        source.slice(
-          Math.max(0, index - 1200),
-          Math.min(source.length, index + 2800)
-        )
-      );
-
+      matches.push({ term, position: index });
       position = index + search.length;
       count++;
     }
   }
 
-  return results.slice(0, 40);
+  matches.sort((a, b) => a.position - b.position);
+
+  const results: string[] = [];
+  let lastEnd = -1;
+
+  for (const match of matches) {
+    const start = Math.max(0, match.position - 900);
+    const end = Math.min(source.length, match.position + 2200);
+
+    // Avoid returning the same surrounding code repeatedly.
+    if (start < lastEnd - 250) continue;
+
+    results.push(
+      `SOURCE: NSE all-reports.js\n` +
+        `MATCH: ${match.term}\n` +
+        `POSITION: ${match.position}\n\n` +
+        source.slice(start, end)
+    );
+
+    lastEnd = end;
+
+    if (results.length >= 25) break;
+  }
+
+  return results;
 }
 
 export async function POST(request: NextRequest) {
@@ -145,103 +169,42 @@ export async function POST(request: NextRequest) {
       throw new Error("NSE returned an incomplete page.");
     }
 
-    const htmlContexts = extractContexts(
-      html,
-      [
-        "cr_equity_archives_mii_security_file_nse",
-        "CM - MII - Security File",
-        "NSE Listed securities",
-        "class=\"download\"",
-        "class='download'",
-        "reportsDownload",
-      ],
-      "NSE ALL REPORTS HTML",
-      5
-    );
+    const scriptUrl = findAllReportsScript(html);
 
-    const scriptUrls = extractScriptUrls(html);
+    if (!scriptUrl) {
+      throw new Error(
+        "NSE all-reports.js script was not found in the page."
+      );
+    }
 
-    const scriptResults = await Promise.all(
-      scriptUrls.map(async (url) => {
-        try {
-          const source = await fetchText(url);
+    const source = await fetchText(scriptUrl);
 
-          const contexts = extractContexts(
-            source,
-            [
-              "cr_equity_archives_mii_security_file_nse",
-              "genDownloadLink",
-              "SingledownloadReports",
-              "downloadReports",
-              ".download",
-              "reportsDownload",
-              "data-link",
-              "fileURLs",
-              "api/zipem",
-              "ajax",
-            ],
-            url,
-            3
-          );
+    if (source.length < 1000) {
+      throw new Error("NSE all-reports.js appears incomplete.");
+    }
 
-          return {
-            url,
-            success: true,
-            length: source.length,
-            contexts,
-          };
-        } catch (error) {
-          return {
-            url,
-            success: false,
-            length: 0,
-            contexts: [],
-            error:
-              error instanceof Error
-                ? error.message
-                : "Script inspection failed.",
-          };
-        }
-      })
-    );
-
-    const scriptContexts = scriptResults
-      .flatMap((item) => item.contexts)
-      .slice(0, 40);
+    const scriptContexts = extractFocusedContexts(source);
 
     return jsonResponse({
       success: true,
-      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V6",
+      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V7",
       pageLength: html.length,
-      htmlMatchCount: htmlContexts.length,
-      scriptsDiscovered: scriptUrls.length,
-      scriptsFetched: scriptResults.filter(
-        (item) => item.success
-      ).length,
-      scriptsFailed: scriptResults.filter(
-        (item) => !item.success
-      ).length,
-      scriptInventory: scriptResults.map((item) => ({
-        url: item.url,
-        success: item.success,
-        length: item.length,
-        contextMatches: item.contexts.length,
-        error: item.error ?? null,
-      })),
-      htmlContexts,
+      scriptUrl,
+      scriptLength: source.length,
+      focusedMatchCount: scriptContexts.length,
       scriptContexts,
       databaseWrites: 0,
       filesDownloaded: 0,
       note:
-        "NSE report HTML and JavaScript inspected only. No download endpoint called, no files downloaded and no database records modified.",
+        "Only the NSE all-reports.js file was inspected for download functions and endpoint references. No download endpoint was called, no files were downloaded and no database records were modified.",
     });
   } catch (error) {
     const message =
       error instanceof Error
         ? error.message
-        : "Unknown NSE inspection error.";
+        : "Unknown NSE V7 inspection error.";
 
-    console.error("NSE V6 inspection failed:", message);
+    console.error("NSE V7 inspection failed:", message);
 
     return jsonResponse(
       {

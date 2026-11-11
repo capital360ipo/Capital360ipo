@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState } from "react";
@@ -50,6 +49,14 @@ type Result = {
     duplicates?: number;
     evidenceInserted?: number;
     evidenceDuplicates?: number;
+
+    // PDF document diagnostics
+    documentFound?: number;
+    typeDetected?: number;
+    typeMissing?: number;
+    typeUpdated?: number;
+    documentErrors?: number;
+    message?: string;
   };
   matching?: {
     success?: boolean;
@@ -109,6 +116,7 @@ export default function IpoCollectorButton() {
   }
 
   const matching = result?.matching?.result;
+  const collection = result?.collection;
 
   return (
     <section className="mt-6 rounded-2xl border border-emerald-500/30 bg-slate-900 p-6">
@@ -149,11 +157,35 @@ export default function IpoCollectorButton() {
               <h3 className="mt-4 font-semibold">Collection Summary</h3>
 
               <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-                <Metric label="Detected" value={result.collection?.detected ?? 0} />
-                <Metric label="Inserted" value={result.collection?.inserted ?? 0} />
-                <Metric label="Duplicates" value={result.collection?.duplicates ?? 0} />
-                <Metric label="Evidence Inserted" value={result.collection?.evidenceInserted ?? 0} />
-                <Metric label="Evidence Duplicates" value={result.collection?.evidenceDuplicates ?? 0} />
+                <Metric label="Detected" value={collection?.detected ?? 0} />
+                <Metric label="Inserted" value={collection?.inserted ?? 0} />
+                <Metric label="Duplicates" value={collection?.duplicates ?? 0} />
+                <Metric label="Evidence Inserted" value={collection?.evidenceInserted ?? 0} />
+                <Metric label="Evidence Duplicates" value={collection?.evidenceDuplicates ?? 0} />
+              </div>
+
+              <div className="mt-5 border-t border-slate-700 pt-4">
+                <h3 className="font-semibold text-amber-400">
+                  PDF Document Diagnostics
+                </h3>
+
+                <p className="mt-1 text-xs text-slate-500">
+                  SEBI filing page se PDF detection aur IPO type extraction ka result.
+                </p>
+
+                <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  <Metric label="PDF Documents Found" value={collection?.documentFound ?? 0} />
+                  <Metric label="IPO Type Detected" value={collection?.typeDetected ?? 0} />
+                  <Metric label="IPO Type Missing" value={collection?.typeMissing ?? 0} />
+                  <Metric label="Queue Type Updated" value={collection?.typeUpdated ?? 0} />
+                  <Metric label="Document Errors" value={collection?.documentErrors ?? 0} />
+                </div>
+
+                {collection?.message && (
+                  <p className="mt-3 rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
+                    {collection.message}
+                  </p>
+                )}
               </div>
 
               <div className="mt-5 border-t border-slate-700 pt-4">

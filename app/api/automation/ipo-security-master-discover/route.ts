@@ -1,3 +1,4 @@
+
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -66,17 +67,20 @@ async function fetchText(url: string) {
 
 function extractContexts(source: string, sourceName: string) {
   const terms = [
+    "function fileDownload",
+    "fileDownload =",
+    "fileDownload(",
+    "fileDownload:",
+    "downloadData",
     "SingledownloadReports",
-    "downloadReports",
-    "genDownloadLink",
     "api/zipem",
     "fileURLs",
-    "function SingledownloadReports",
-    "function downloadReports",
-    "window.SingledownloadReports",
-    "SingledownloadReports =",
-    "downloadReports =",
-    "data-link",
+    "window.open",
+    "fetch(",
+    "$.ajax",
+    "XMLHttpRequest",
+    "B.get(",
+    "B.post(",
   ];
 
   const lower = source.toLowerCase();
@@ -91,7 +95,7 @@ function extractContexts(source: string, sourceName: string) {
     let position = 0;
     let count = 0;
 
-    while (count < 12) {
+    while (count < 20) {
       const index = lower.indexOf(search, position);
 
       if (index === -1) break;
@@ -112,10 +116,10 @@ function extractContexts(source: string, sourceName: string) {
   let lastEnd = -1;
 
   for (const match of matches) {
-    const start = Math.max(0, match.position - 1200);
-    const end = Math.min(source.length, match.position + 3000);
+    const start = Math.max(0, match.position - 1800);
+    const end = Math.min(source.length, match.position + 4500);
 
-    if (start < lastEnd - 300) continue;
+    if (start < lastEnd - 400) continue;
 
     results.push(
       `SOURCE: ${sourceName}\n` +
@@ -126,7 +130,7 @@ function extractContexts(source: string, sourceName: string) {
 
     lastEnd = end;
 
-    if (results.length >= 30) break;
+    if (results.length >= 35) break;
   }
 
   return results;
@@ -149,7 +153,6 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    // Confirm the NSE report page is reachable.
     const html = await fetchText(NSE_PAGE);
 
     if (html.length < 1000) {
@@ -189,7 +192,7 @@ export async function POST(request: NextRequest) {
 
     return jsonResponse({
       success: true,
-      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V8",
+      mode: "READ_ONLY_NSE_SECURITY_MASTER_INSPECTION_V9",
       pageLength: html.length,
       scriptsInspected: scriptResults.length,
       scriptsFetched: scriptResults.filter(
@@ -211,15 +214,15 @@ export async function POST(request: NextRequest) {
       databaseWrites: 0,
       filesDownloaded: 0,
       note:
-        "Only two NSE JavaScript files were inspected. No download endpoint was called, no files were downloaded and no database records were modified.",
+        "Only two NSE JavaScript files were inspected for download logic. No download endpoint was called, no files were downloaded and no database records were modified.",
     });
   } catch (error) {
     const message =
       error instanceof Error
         ? error.message
-        : "Unknown NSE V8 inspection error.";
+        : "Unknown NSE V9 inspection error.";
 
-    console.error("NSE V8 inspection failed:", message);
+    console.error("NSE V9 inspection failed:", message);
 
     return jsonResponse(
       {

@@ -8,6 +8,7 @@ import IpoLifecycleButton from "./ipo-lifecycle-button";
 import NseAttachmentParserButton from "./nse-attachment-parser-button";
 import NseListingCollectorButton from "./nse-listing-collector-button";
 import NseIpoTrackerPreview from "./nse-ipo-tracker-preview";
+import IpoSecurityMasterDiscoverButton from "./ipo-security-master-discover-button";
 import IpoListingHistoryImport from "./ipo-listing-history-import";
 import IpoListingHistoryReview from "./ipo-listing-history-review";
 
@@ -70,6 +71,8 @@ export default async function OwnerDashboard() {
           <NseListingCollectorButton />
 
           <NseIpoTrackerPreview />
+
+          <IpoSecurityMasterDiscoverButton />
 
           <IpoListingHistoryImport />
 

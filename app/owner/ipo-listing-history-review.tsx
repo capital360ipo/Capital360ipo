@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
 
 type ListingRecord = {
   id: string;
@@ -25,7 +26,37 @@ type ApiResult = {
   error?: string;
 };
 
+type EvidenceType =
+  | "nse_listing_circular"
+  | "nse_security_master"
+  | "sebi_filing"
+  | "issuer_website"
+  | "other";
+
+type EvidenceDraft = {
+  source_name: string;
+  source_url: string;
+  evidence_type: EvidenceType;
+  field_name: string;
+  field_value: string;
+  issuer_name: string;
+};
+
+type EvidenceResult = {
+  success: boolean;
+  message: string;
+};
+
 const PAGE_SIZE = 25;
+
+const DEFAULT_EVIDENCE: EvidenceDraft = {
+  source_name: "NSE",
+  source_url: "",
+  evidence_type: "nse_listing_circular",
+  field_name: "",
+  field_value: "",
+  issuer_name: "",
+};
 
 function formatDate(value: string | null) {
   if (!value) return "—";
@@ -87,6 +118,18 @@ export default function IpoListingHistoryReview() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const [evidenceDrafts, setEvidenceDrafts] = useState<
+    Record<string, EvidenceDraft>
+  >({});
+
+  const [evidenceResults, setEvidenceResults] = useState<
+    Record<string, EvidenceResult>
+  >({});
+
+  const [evidenceLoadingId, setEvidenceLoadingId] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     let active = true;
@@ -172,6 +215,143 @@ export default function IpoListingHistoryReview() {
     setExpandedId((current) => (current === id ? null : id));
   }
 
+  function getDraft(id: string): EvidenceDraft {
+    return evidenceDrafts[id] || DEFAULT_EVIDENCE;
+  }
+
+  function updateDraft(
+    id: string,
+    field: keyof EvidenceDraft,
+    value: string
+  ) {
+    setEvidenceDrafts((previous) => ({
+      ...previous,
+      [id]: {
+        ...(previous[id] || DEFAULT_EVIDENCE),
+        [field]: value,
+      },
+    }));
+
+    setEvidenceResults((previous) => {
+      const next = { ...previous };
+      delete next[id];
+      return next;
+    });
+  }
+
+  async function submitEvidence(
+    event: FormEvent<HTMLFormElement>,
+    record: ListingRecord
+  ) {
+    event.preventDefault();
+
+    if (evidenceLoadingId) return;
+
+    const draft = getDraft(record.id);
+
+    if (!draft.source_name.trim()) {
+      setEvidenceResults((previous) => ({
+        ...previous,
+        [record.id]: {
+          success: false,
+          message: "Source name is required.",
+        },
+      }));
+      return;
+    }
+
+    if (
+      (draft.evidence_type === "nse_listing_circular" ||
+        draft.evidence_type === "nse_security_master" ||
+        draft.evidence_type === "sebi_filing") &&
+      !draft.source_url.trim()
+    ) {
+      setEvidenceResults((previous) => ({
+        ...previous,
+        [record.id]: {
+          success: false,
+          message: "Official source URL is required for this evidence type.",
+        },
+      }));
+      return;
+    }
+
+    setEvidenceLoadingId(record.id);
+
+    setEvidenceResults((previous) => {
+      const next = { ...previous };
+      delete next[record.id];
+      return next;
+    });
+
+    try {
+      const response = await fetch(
+        "/api/automation/ipo-listing-evidence",
+        {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            listing_history_id: record.id,
+            source_name: draft.source_name.trim(),
+            source_url: draft.source_url.trim() || null,
+            evidence_type: draft.evidence_type,
+            field_name: draft.field_name.trim() || null,
+            field_value: draft.field_value.trim() || null,
+            issuer_name: draft.issuer_name.trim() || null,
+          }),
+        }
+      );
+
+      const contentType =
+        response.headers.get("content-type") || "";
+
+      if (!contentType.includes("application/json")) {
+        throw new Error("Unexpected server response.");
+      }
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.error || "Evidence submission failed."
+        );
+      }
+
+      setEvidenceResults((previous) => ({
+        ...previous,
+        [record.id]: {
+          success: true,
+          message:
+            "Evidence submitted successfully. Verification status: Unverified.",
+        },
+      }));
+
+      setEvidenceDrafts((previous) => ({
+        ...previous,
+        [record.id]: { ...DEFAULT_EVIDENCE },
+      }));
+    } catch (err) {
+      setEvidenceResults((previous) => ({
+        ...previous,
+        [record.id]: {
+          success: false,
+          message:
+            err instanceof Error
+              ? err.message
+              : "Unknown evidence submission error.",
+        },
+      }));
+    } finally {
+      setEvidenceLoadingId(null);
+    }
+  }
+
+  const inputClass =
+    "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-sm text-white outline-none focus:border-emerald-500";
+
   return (
     <section className="rounded-2xl border border-slate-700 bg-slate-900 p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -180,7 +360,7 @@ export default function IpoListingHistoryReview() {
             IPO Listing History Review
           </h2>
           <p className="mt-1 text-sm text-slate-400">
-            Review imported NSE listing records.
+            Review imported NSE listing records and submit official evidence.
           </p>
         </div>
 
@@ -222,7 +402,7 @@ export default function IpoListingHistoryReview() {
             setExpandedId(null);
           }}
           placeholder="Search company name or symbol..."
-          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-emerald-500"
+          className={inputClass}
         />
       </div>
 
@@ -259,13 +439,14 @@ export default function IpoListingHistoryReview() {
               <tbody className="divide-y divide-slate-800">
                 {visibleRecords.map((record) => {
                   const isExpanded = expandedId === record.id;
+                  const draft = getDraft(record.id);
+                  const evidenceResult = evidenceResults[record.id];
+                  const isSubmitting =
+                    evidenceLoadingId === record.id;
 
                   return (
-                    <>
-                      <tr
-                        key={record.id}
-                        className="hover:bg-slate-800/50"
-                      >
+                    <Fragment key={record.id}>
+                      <tr className="hover:bg-slate-800/50">
                         <td className="px-3 py-4">
                           <p className="font-semibold text-white">
                             {record.company_name}
@@ -318,9 +499,9 @@ export default function IpoListingHistoryReview() {
                       </tr>
 
                       {isExpanded && (
-                        <tr key={`${record.id}-details`}>
+                        <tr>
                           <td colSpan={9} className="bg-slate-950/70 p-4">
-                            <div className="space-y-4">
+                            <div className="space-y-5">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <h3 className="text-base font-bold text-white">
                                   {record.company_name}
@@ -336,57 +517,46 @@ export default function IpoListingHistoryReview() {
                                   label="Company Name"
                                   value={record.company_name}
                                 />
-
                                 <DetailItem
                                   label="Trading Symbol"
                                   value={record.symbol}
                                 />
-
                                 <DetailItem
                                   label="Listing Date"
                                   value={formatDate(record.listing_date)}
                                 />
-
                                 <DetailItem
                                   label="Issue Price"
                                   value={formatPrice(record.issue_price)}
                                 />
-
                                 <DetailItem
                                   label="Listing Day Close"
                                   value={formatPrice(record.listing_day_close)}
                                 />
-
                                 <DetailItem
                                   label="Listing Day Gain"
                                   value={formatPercent(record.listing_day_gain_percent)}
                                 />
-
                                 <DetailItem
                                   label="Latest Traded Price (LTP)"
                                   value={formatPrice(record.ltp)}
                                 />
-
                                 <DetailItem
                                   label="Current Gain"
                                   value={formatPercent(record.current_gain_percent)}
                                 />
-
                                 <DetailItem
                                   label="Review Status"
                                   value={record.review_status}
                                 />
-
                                 <DetailItem
                                   label="Data Source"
                                   value={record.source}
                                 />
-
                                 <DetailItem
                                   label="Source Observed At"
                                   value={formatDateTime(record.source_observed_at)}
                                 />
-
                                 <DetailItem
                                   label="Record Imported At"
                                   value={formatDateTime(record.created_at)}
@@ -398,13 +568,191 @@ export default function IpoListingHistoryReview() {
                                   Verification Required
                                 </p>
                                 <p className="mt-1 text-xs leading-5 text-slate-300">
-                                  This record is imported from the NSE IPO
-                                  Tracker CSV. Company name and symbol have
-                                  not yet been independently verified against
-                                  official NSE or SEBI identity evidence.
-                                  No IPO Master linking or approval has been
-                                  performed.
+                                  This listing record has not yet been
+                                  independently verified against official
+                                  identity evidence. Adding evidence does not
+                                  approve or publish this listing.
                                 </p>
+                              </div>
+
+                              <div className="rounded-xl border border-slate-700 bg-slate-900 p-4">
+                                <h3 className="text-base font-bold text-white">
+                                  Add Official Evidence
+                                </h3>
+
+                                <p className="mt-1 text-xs leading-5 text-slate-400">
+                                  Submit an official source reference or
+                                  supporting information for this listing.
+                                  Every submission starts as Unverified.
+                                </p>
+
+                                <form
+                                  onSubmit={(event) =>
+                                    submitEvidence(event, record)
+                                  }
+                                  className="mt-4 space-y-3"
+                                >
+                                  <div>
+                                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                                      Evidence Type
+                                    </label>
+
+                                    <select
+                                      value={draft.evidence_type}
+                                      onChange={(event) =>
+                                        updateDraft(
+                                          record.id,
+                                          "evidence_type",
+                                          event.target.value
+                                        )
+                                      }
+                                      className={inputClass}
+                                      disabled={isSubmitting}
+                                    >
+                                      <option value="nse_listing_circular">
+                                        NSE Listing Circular
+                                      </option>
+                                      <option value="nse_security_master">
+                                        NSE Security Master
+                                      </option>
+                                      <option value="sebi_filing">
+                                        SEBI Filing
+                                      </option>
+                                      <option value="issuer_website">
+                                        Issuer Website
+                                      </option>
+                                      <option value="other">
+                                        Other Evidence
+                                      </option>
+                                    </select>
+                                  </div>
+
+                                  <div>
+                                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                                      Source Name
+                                    </label>
+                                    <input
+                                      value={draft.source_name}
+                                      onChange={(event) =>
+                                        updateDraft(
+                                          record.id,
+                                          "source_name",
+                                          event.target.value
+                                        )
+                                      }
+                                      placeholder="Example: NSE"
+                                      maxLength={100}
+                                      required
+                                      className={inputClass}
+                                      disabled={isSubmitting}
+                                    />
+                                  </div>
+
+                                  <div>
+                                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                                      Official Source URL
+                                    </label>
+                                    <input
+                                      type="url"
+                                      value={draft.source_url}
+                                      onChange={(event) =>
+                                        updateDraft(
+                                          record.id,
+                                          "source_url",
+                                          event.target.value
+                                        )
+                                      }
+                                      placeholder="https://..."
+                                      maxLength={2000}
+                                      className={inputClass}
+                                      disabled={isSubmitting}
+                                    />
+                                  </div>
+
+                                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                    <div>
+                                      <label className="mb-1 block text-xs font-medium text-slate-300">
+                                        Field Name
+                                      </label>
+                                      <input
+                                        value={draft.field_name}
+                                        onChange={(event) =>
+                                          updateDraft(
+                                            record.id,
+                                            "field_name",
+                                            event.target.value
+                                          )
+                                        }
+                                        placeholder="Example: ISIN"
+                                        maxLength={200}
+                                        className={inputClass}
+                                        disabled={isSubmitting}
+                                      />
+                                    </div>
+
+                                    <div>
+                                      <label className="mb-1 block text-xs font-medium text-slate-300">
+                                        Field Value
+                                      </label>
+                                      <input
+                                        value={draft.field_value}
+                                        onChange={(event) =>
+                                          updateDraft(
+                                            record.id,
+                                            "field_value",
+                                            event.target.value
+                                          )
+                                        }
+                                        placeholder="Example: INE..."
+                                        maxLength={1000}
+                                        className={inputClass}
+                                        disabled={isSubmitting}
+                                      />
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                                      Issuer Name
+                                    </label>
+                                    <input
+                                      value={draft.issuer_name}
+                                      onChange={(event) =>
+                                        updateDraft(
+                                          record.id,
+                                          "issuer_name",
+                                          event.target.value
+                                        )
+                                      }
+                                      placeholder="Company / Issuer name"
+                                      maxLength={250}
+                                      className={inputClass}
+                                      disabled={isSubmitting}
+                                    />
+                                  </div>
+
+                                  <button
+                                    type="submit"
+                                    disabled={isSubmitting}
+                                    className="w-full rounded-lg bg-emerald-600 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                                  >
+                                    {isSubmitting
+                                      ? "Submitting Evidence..."
+                                      : "Submit Evidence"}
+                                  </button>
+                                </form>
+
+                                {evidenceResult && (
+                                  <div
+                                    className={`mt-4 rounded-lg border p-3 text-sm ${
+                                      evidenceResult.success
+                                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                                        : "border-red-500/30 bg-red-500/10 text-red-300"
+                                    }`}
+                                  >
+                                    {evidenceResult.message}
+                                  </div>
+                                )}
                               </div>
 
                               <p className="text-xs text-slate-500">
@@ -414,7 +762,7 @@ export default function IpoListingHistoryReview() {
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   );
                 })}
 
@@ -467,9 +815,9 @@ export default function IpoListingHistoryReview() {
       )}
 
       <p className="mt-5 text-xs leading-5 text-slate-500">
-        Read-only review view. No approval, rejection, identity
-        verification, IPO master linking, or database modification
-        is performed here.
+        Evidence submissions remain unverified. This screen does not
+        approve, reject, verify identity, link IPO Master records,
+        or publish listings.
       </p>
     </section>
   );

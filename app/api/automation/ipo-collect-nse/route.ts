@@ -22,6 +22,16 @@ const HEADERS = {
   Referer: "https://www.nseindia.com/",
 };
 
+type AtomicSaveResult = {
+  success?: boolean;
+  queue_id?: string;
+  queue_inserted?: boolean;
+  queue_duplicate?: boolean;
+  evidence_inserted?: boolean;
+  evidence_duplicate?: boolean;
+  evidence_status?: string;
+};
+
 function jsonResponse(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
@@ -94,7 +104,7 @@ function parseNseDate(value: string): string | null {
   return null;
 }
 
-function getNseSourceUrl(href: string): string {
+function getNseSourceUrl(href: string): string | null {
   try {
     const url = new URL(href, NSE_URL);
 
@@ -105,12 +115,12 @@ function getNseSourceUrl(href: string): string {
       url.password ||
       url.port
     ) {
-      return NSE_URL;
+      return null;
     }
 
     return url.href;
   } catch {
-    return NSE_URL;
+    return null;
   }
 }
 
@@ -198,9 +208,23 @@ async function collectIpos() {
       ),
     ];
 
-    const sourceUrl = links.length
-      ? getNseSourceUrl(links[0][1])
-      : NSE_URL;
+    // If an attachment link exists, it must pass NSE host validation.
+    // If no link exists, retain the official NSE listing page as the source.
+    let sourceUrl = NSE_URL;
+
+    if (links.length > 0) {
+      const validatedUrl = getNseSourceUrl(links[0][1]);
+
+      if (!validatedUrl) {
+        console.warn(
+          "Skipping NSE record with an invalid source URL:",
+          companyName
+        );
+        continue;
+      }
+
+      sourceUrl = validatedUrl;
+    }
 
     const key = `${companyName}|${filingDate}|${ipoType ?? "unknown"}`;
 
@@ -223,6 +247,7 @@ async function collectIpos() {
   let inserted = 0;
   let duplicates = 0;
   let evidenceInserted = 0;
+  let evidenceDuplicates = 0;
 
   for (const filing of filings.values()) {
     detected++;
@@ -233,76 +258,87 @@ async function collectIpos() {
       )
       .digest("hex");
 
-    const { data: queueRecord, error: queueError } =
-      await supabaseAdmin
-        .from("ipo_import_queue")
-        .insert({
-          source_name: "NSE",
-          source_url: filing.sourceUrl,
-          external_id: contentHash,
-          company_name: filing.companyName,
-          ipo_type: filing.ipoType,
-          drhp_filed_date: filing.filingDate,
-          detected_status: "drhp_filed",
-          raw_payload: {
-            company_name: filing.companyName,
-            filing_date: filing.filingDate,
-            ipo_type: filing.ipoType,
-            board_type: filing.boardType,
-            source_url: filing.sourceUrl,
-            source: "NSE",
-          },
-          content_hash: contentHash,
-          review_status: "pending",
-          collected_at: new Date().toISOString(),
-        })
-        .select("id")
-        .single();
+    const collectedAt = new Date().toISOString();
 
-    if (queueError?.code === "23505") {
-      duplicates++;
-      continue;
-    }
-
-    if (queueError || !queueRecord) {
-      throw new Error(
-        `IPO queue insert failed: ${queueError?.message ?? "Record ID missing"}`
-      );
-    }
-
-    inserted++;
-
-    const { error: evidenceError } = await supabaseAdmin
-      .from("ipo_source_evidence")
-      .insert({
-        queue_id: queueRecord.id,
-        source_name: "NSE",
+    const queuePayload = {
+      source_name: "NSE",
+      source_url: filing.sourceUrl,
+      external_id: contentHash,
+      company_name: filing.companyName,
+      ipo_type: filing.ipoType,
+      drhp_filed_date: filing.filingDate,
+      detected_status: "drhp_filed",
+      raw_payload: {
+        company_name: filing.companyName,
+        filing_date: filing.filingDate,
+        ipo_type: filing.ipoType,
+        board_type: filing.boardType,
         source_url: filing.sourceUrl,
-        evidence_type: "nse_csv_filing_record",
-        field_name: "drhp_filed_date",
-        field_value: filing.filingDate,
-        issuer_name: filing.companyName,
-        is_official_source: true,
-        validation_status: "unverified",
-        content_hash: contentHash,
-        observed_at: new Date().toISOString(),
-        metadata: {
-          evidence_scope: "NSE public issue advertisement filing",
-          board_type: filing.boardType,
-          issue_type: filing.ipoType,
-          related_date_column: "filing_date",
-          related_date_value: filing.filingDate,
-          review_status: "pending_manual_review",
-        },
-      });
+        source: "NSE",
+      },
+      content_hash: contentHash,
+      review_status: "pending",
+      collected_at: collectedAt,
+    };
 
-    if (evidenceError) {
+    const evidencePayload = {
+      source_name: "NSE",
+      source_url: filing.sourceUrl,
+      evidence_type: "nse_csv_filing_record",
+      field_name: "drhp_filed_date",
+      field_value: filing.filingDate,
+      issuer_name: filing.companyName,
+      is_official_source: true,
+      content_hash: contentHash,
+      observed_at: collectedAt,
+      metadata: {
+        evidence_scope: "NSE public issue advertisement filing",
+        board_type: filing.boardType,
+        issue_type: filing.ipoType,
+        related_date_column: "filing_date",
+        related_date_value: filing.filingDate,
+        review_status: "pending_manual_review",
+      },
+    };
+
+    // One database function call saves queue + evidence atomically.
+    const { data, error } = await supabaseAdmin.rpc(
+      "save_ipo_collection_record",
+      {
+        p_queue: queuePayload,
+        p_evidence: evidencePayload,
+      }
+    );
+
+    if (error) {
       throw new Error(
-        `NSE evidence insert failed: ${evidenceError.message}`
+        `NSE atomic collection failed for ${filing.companyName}: ${error.message}`
       );
     }
 
-    evidenceInserted++;
+    const result = data as AtomicSaveResult | null;
+
+    if (
+      !result ||
+      result.success !== true ||
+      !result.queue_id
+    ) {
+      throw new Error(
+        `NSE atomic RPC returned an invalid result for ${filing.companyName}.`
+      );
+    }
+
+    if (result.queue_inserted === true) {
+      inserted++;
+    } else {
+      duplicates++;
+    }
+
+    if (result.evidence_inserted === true) {
+      evidenceInserted++;
+    } else {
+      evidenceDuplicates++;
+    }
   }
 
   return {
@@ -310,6 +346,7 @@ async function collectIpos() {
     inserted,
     duplicates,
     evidenceInserted,
+    evidenceDuplicates,
   };
 }
 
@@ -346,7 +383,7 @@ async function handleCollection() {
     }
 
     const message =
-      `Detected: ${collection.detected}, Inserted: ${collection.inserted}, Duplicates: ${collection.duplicates}, Evidence: ${collection.evidenceInserted}`;
+      `Detected: ${collection.detected}, Inserted: ${collection.inserted}, Duplicates: ${collection.duplicates}, Evidence inserted: ${collection.evidenceInserted}, Evidence duplicates: ${collection.evidenceDuplicates}`;
 
     await writeLog("success", message);
 

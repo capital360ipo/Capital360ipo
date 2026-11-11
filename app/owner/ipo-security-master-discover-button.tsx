@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState } from "react";
@@ -11,23 +12,33 @@ type ContextInfo = {
 type DiscoverResult = {
   success?: boolean;
   mode?: string;
+
   inspection?: {
     pageUrl?: string;
-    scriptUrl?: string;
+    reportsScriptUrl?: string;
+    nseMinScriptUrl?: string;
     htmlLength?: number;
-    scriptLength?: number;
+    reportsScriptLength?: number;
+    nseMinScriptLength?: number;
     htmlHttpStatus?: number;
-    scriptHttpStatus?: number;
+    reportsScriptHttpStatus?: number;
+    nseMinScriptHttpStatus?: number;
   };
+
   htmlContexts?: ContextInfo[];
-  javascriptContexts?: ContextInfo[];
+  reportsJavascriptContexts?: ContextInfo[];
+  metadataContexts?: ContextInfo[];
+
+  possibleApiPaths?: string[];
   filenameMatches?: string[];
+
   safety?: {
     databaseWrites?: number;
     filesDownloaded?: number;
     externalDownloadEndpointsCalled?: number;
     databaseModified?: boolean;
   };
+
   nextStep?: string;
   error?: string;
 };
@@ -75,7 +86,7 @@ export default function IpoSecurityMasterDiscoverButton() {
   }
 
   function renderContexts(contexts?: ContextInfo[]) {
-    if (!contexts || contexts.length === 0) {
+    if (!contexts?.length) {
       return (
         <p className="mt-2 text-sm text-amber-300">
           No matching references found.
@@ -98,6 +109,29 @@ export default function IpoSecurityMasterDiscoverButton() {
               {item.context}
             </pre>
           </div>
+        ))}
+      </div>
+    );
+  }
+
+  function renderList(items?: string[]) {
+    if (!items?.length) {
+      return (
+        <p className="mt-2 text-sm text-amber-300">
+          No matching references found.
+        </p>
+      );
+    }
+
+    return (
+      <div className="mt-3 space-y-2">
+        {items.map((item, index) => (
+          <pre
+            key={`${item}-${index}`}
+            className="overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-900 p-3 text-xs text-cyan-300"
+          >
+            {item}
+          </pre>
         ))}
       </div>
     );
@@ -137,11 +171,14 @@ export default function IpoSecurityMasterDiscoverButton() {
                 {[
                   ["Mode", result.mode],
                   ["HTML Length", result.inspection?.htmlLength],
-                  ["Script Length", result.inspection?.scriptLength],
+                  ["Reports Script Length", result.inspection?.reportsScriptLength],
+                  ["NSE Min Script Length", result.inspection?.nseMinScriptLength],
                   ["HTML HTTP Status", result.inspection?.htmlHttpStatus],
-                  ["Script HTTP Status", result.inspection?.scriptHttpStatus],
+                  ["Reports Script HTTP Status", result.inspection?.reportsScriptHttpStatus],
+                  ["NSE Min Script HTTP Status", result.inspection?.nseMinScriptHttpStatus],
                   ["Database Writes", result.safety?.databaseWrites],
                   ["Files Downloaded", result.safety?.filesDownloaded],
+                  ["External Download Calls", result.safety?.externalDownloadEndpointsCalled],
                   ["Database Modified", String(result.safety?.databaseModified)],
                 ].map(([label, value]) => (
                   <div key={String(label)}>
@@ -157,29 +194,35 @@ export default function IpoSecurityMasterDiscoverButton() {
                 <h4 className="font-semibold text-white">
                   Filename Matches
                 </h4>
-                {result.filenameMatches?.length ? (
-                  result.filenameMatches.map((name, index) => (
-                    <p key={index} className="mt-2 break-all text-xs text-cyan-300">
-                      {name}
-                    </p>
-                  ))
-                ) : (
-                  <p className="mt-2 text-sm text-amber-300">
-                    No filename matches found.
-                  </p>
-                )}
+                {renderList(result.filenameMatches)}
               </div>
 
               <div className="mt-5">
-                <h4 className="font-semibold text-white">HTML Contexts</h4>
+                <h4 className="font-semibold text-white">
+                  Possible API Paths (Not Called)
+                </h4>
+                {renderList(result.possibleApiPaths)}
+              </div>
+
+              <div className="mt-5">
+                <h4 className="font-semibold text-white">
+                  HTML Contexts
+                </h4>
                 {renderContexts(result.htmlContexts)}
               </div>
 
               <div className="mt-5">
                 <h4 className="font-semibold text-white">
-                  JavaScript Contexts
+                  Reports JavaScript Contexts
                 </h4>
-                {renderContexts(result.javascriptContexts)}
+                {renderContexts(result.reportsJavascriptContexts)}
+              </div>
+
+              <div className="mt-5">
+                <h4 className="font-semibold text-white">
+                  NSE Metadata Contexts
+                </h4>
+                {renderContexts(result.metadataContexts)}
               </div>
 
               <p className="mt-4 text-xs text-slate-400">

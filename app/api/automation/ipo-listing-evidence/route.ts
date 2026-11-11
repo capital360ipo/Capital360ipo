@@ -1,3 +1,4 @@
+
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -29,11 +30,16 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+function isHostUnder(hostname: string, domain: string) {
+  return (
+    hostname === domain ||
+    hostname.endsWith(`.${domain}`)
+  );
+}
+
 function isOfficialHost(hostname: string) {
-  return OFFICIAL_HOSTS.some(
-    (host) =>
-      hostname === host ||
-      hostname.endsWith(`.${host}`)
+  return OFFICIAL_HOSTS.some((domain) =>
+    isHostUnder(hostname, domain)
   );
 }
 
@@ -132,7 +138,10 @@ export async function POST(request: NextRequest) {
       )
     ) {
       return jsonResponse(
-        { success: false, error: "Valid listing_history_id is required." },
+        {
+          success: false,
+          error: "Valid listing_history_id is required.",
+        },
         400
       );
     }
@@ -167,7 +176,10 @@ export async function POST(request: NextRequest) {
       !validOptionalText(issuer_name, 250)
     ) {
       return jsonResponse(
-        { success: false, error: "One or more fields are invalid or too long." },
+        {
+          success: false,
+          error: "One or more fields are invalid or too long.",
+        },
         400
       );
     }
@@ -193,36 +205,57 @@ export async function POST(request: NextRequest) {
         parsedUrl.password
       ) {
         return jsonResponse(
-          { success: false, error: "Only secure HTTPS URLs are allowed." },
+          {
+            success: false,
+            error: "Only secure HTTPS URLs are allowed.",
+          },
           400
         );
       }
 
       safeUrl = parsedUrl.toString();
+
       officialSource = isOfficialHost(
         parsedUrl.hostname.toLowerCase()
       );
     }
 
+    const urlHost = safeUrl
+      ? new URL(safeUrl).hostname.toLowerCase()
+      : "";
+
     if (
       (evidence_type === "nse_listing_circular" ||
         evidence_type === "nse_security_master") &&
-      (!safeUrl || !new URL(safeUrl).hostname.toLowerCase().endsWith("nseindia.com"))
+      (!safeUrl || !isHostUnder(urlHost, "nseindia.com"))
     ) {
       return jsonResponse(
-        { success: false, error: "NSE evidence must use an NSE official URL." },
+        {
+          success: false,
+          error: "NSE evidence must use an NSE official URL.",
+        },
         400
       );
     }
 
     if (
       evidence_type === "sebi_filing" &&
-      (!safeUrl || !new URL(safeUrl).hostname.toLowerCase().endsWith("sebi.gov.in"))
+      (!safeUrl || !isHostUnder(urlHost, "sebi.gov.in"))
     ) {
       return jsonResponse(
-        { success: false, error: "SEBI evidence must use a SEBI official URL." },
+        {
+          success: false,
+          error: "SEBI evidence must use a SEBI official URL.",
+        },
         400
       );
+    }
+
+    if (
+      evidence_type === "issuer_website" &&
+      officialSource
+    ) {
+      officialSource = false;
     }
 
     const { data: listing, error: listingError } =
@@ -236,14 +269,20 @@ export async function POST(request: NextRequest) {
       console.error("Listing history lookup failed:", listingError);
 
       return jsonResponse(
-        { success: false, error: "Could not verify listing record." },
+        {
+          success: false,
+          error: "Could not verify listing record.",
+        },
         500
       );
     }
 
     if (!listing) {
       return jsonResponse(
-        { success: false, error: "Listing history record not found." },
+        {
+          success: false,
+          error: "Listing history record not found.",
+        },
         404
       );
     }
@@ -255,24 +294,24 @@ export async function POST(request: NextRequest) {
         source_name: source_name.trim(),
         source_url: safeUrl,
         evidence_type,
+
         field_name:
           typeof field_name === "string"
             ? field_name.trim() || null
             : null,
+
         field_value:
           typeof field_value === "string"
             ? field_value.trim() || null
             : null,
+
         issuer_name:
           typeof issuer_name === "string"
             ? issuer_name.trim() || null
             : null,
 
-        // Official status is determined by the server,
-        // never accepted from the user's request.
         is_official_source: officialSource,
 
-        // New evidence always starts unverified.
         validation_status: "unverified",
         validated_by: null,
         validated_at: null,
@@ -304,7 +343,10 @@ export async function POST(request: NextRequest) {
       console.error("IPO evidence insert failed:", error);
 
       return jsonResponse(
-        { success: false, error: "Evidence could not be saved." },
+        {
+          success: false,
+          error: "Evidence could not be saved.",
+        },
         500
       );
     }

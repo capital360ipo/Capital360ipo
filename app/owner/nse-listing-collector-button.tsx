@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState } from "react";
@@ -7,13 +6,23 @@ type Result = {
   success?: boolean;
   source?: string;
   collection?: {
+    mode?: string;
     detected?: number;
     matched?: number;
     unmatched?: number;
     ambiguous?: number;
-    evidenceInserted?: number;
-    evidenceDuplicates?: number;
-    automaticListingUpdates?: number;
+    preview?: Array<{
+      listingDate: string;
+      companyName: string;
+      symbol: string;
+      isin: string;
+      ipoType: string;
+      matchStatus: string;
+      identityVerified: boolean;
+    }>;
+    queueRecordsChecked?: number;
+    databaseWrites?: number;
+    lifecycleUpdates?: number;
     automaticPublication?: number;
   };
   message?: string;
@@ -30,7 +39,7 @@ export default function NseListingCollectorButton() {
 
     try {
       const response = await fetch(
-        "/api/automation/nse-listing-circular-collect",
+        "/api/automation/ipo-collect-nse",
         {
           method: "POST",
           headers: {
@@ -39,11 +48,20 @@ export default function NseListingCollectorButton() {
         }
       );
 
+      const contentType =
+        response.headers.get("content-type") || "";
+
+      if (!contentType.includes("application/json")) {
+        throw new Error(
+          `API returned HTML/non-JSON response (HTTP ${response.status}). Check deployment and API route.`
+        );
+      }
+
       const data = (await response.json()) as Result;
 
       if (!response.ok || !data.success) {
         throw new Error(
-          data.error || "NSE listing collection failed."
+          data.error || "NSE listing dry run failed."
         );
       }
 
@@ -68,13 +86,12 @@ export default function NseListingCollectorButton() {
       </p>
 
       <h3 className="mt-2 text-lg font-bold">
-        NSE Recent Equity Listing Collector
+        NSE Recent Equity Listing Dry Run
       </h3>
 
       <p className="mt-2 text-sm text-slate-400">
-        Collect official NSE equity listing evidence.
-        Bonds and non-equity securities are excluded.
-        All evidence remains unverified until review.
+        Read-only NSE listing preview. No evidence insertion,
+        IPO status update, or publication will occur.
       </p>
 
       <button
@@ -83,7 +100,7 @@ export default function NseListingCollectorButton() {
         disabled={loading}
         className="mt-4 rounded-lg bg-cyan-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {loading ? "Collecting..." : "Run NSE Listing Collection"}
+        {loading ? "Checking NSE..." : "Run Read-only Dry Run"}
       </button>
 
       {result && (
@@ -91,47 +108,52 @@ export default function NseListingCollectorButton() {
           {result.success ? (
             <>
               <p className="font-semibold text-emerald-400">
-                Collection completed
+                Dry Run completed
               </p>
 
               <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
-                <p>
-                  Detected:{" "}
-                  <strong>{result.collection?.detected ?? 0}</strong>
-                </p>
-                <p>
-                  Matched:{" "}
-                  <strong>{result.collection?.matched ?? 0}</strong>
-                </p>
-                <p>
-                  Unmatched:{" "}
-                  <strong>{result.collection?.unmatched ?? 0}</strong>
-                </p>
-                <p>
-                  Ambiguous:{" "}
-                  <strong>{result.collection?.ambiguous ?? 0}</strong>
-                </p>
-                <p>
-                  Evidence inserted:{" "}
-                  <strong>
-                    {result.collection?.evidenceInserted ?? 0}
-                  </strong>
-                </p>
-                <p>
-                  Duplicates:{" "}
-                  <strong>
-                    {result.collection?.evidenceDuplicates ?? 0}
-                  </strong>
-                </p>
+                <p>Detected: <strong>{result.collection?.detected ?? 0}</strong></p>
+                <p>Possible matches: <strong>{result.collection?.matched ?? 0}</strong></p>
+                <p>Unmatched: <strong>{result.collection?.unmatched ?? 0}</strong></p>
+                <p>Ambiguous: <strong>{result.collection?.ambiguous ?? 0}</strong></p>
+                <p>Queue checked: <strong>{result.collection?.queueRecordsChecked ?? 0}</strong></p>
+                <p>Database writes: <strong>{result.collection?.databaseWrites ?? 0}</strong></p>
               </div>
 
-              <p className="mt-3 text-xs text-slate-400">
-                Automatic listing updates: 0 | Automatic publication: 0
+              <p className="mt-3 text-xs text-cyan-300">
+                Mode: {result.collection?.mode || "READ ONLY"}
               </p>
+
+              <p className="mt-1 text-xs text-slate-400">
+                Lifecycle updates: 0 | Publication: 0
+              </p>
+
+              {result.collection?.preview?.map((item, index) => (
+                <div
+                  key={`${item.isin}-${index}`}
+                  className="mt-3 rounded-lg border border-slate-700 p-3 text-xs"
+                >
+                  <p className="font-semibold text-white">
+                    {item.companyName}
+                  </p>
+                  <p className="mt-1 text-slate-300">
+                    Date: {item.listingDate} | Symbol: {item.symbol}
+                  </p>
+                  <p className="text-slate-300">
+                    ISIN: {item.isin} | Type: {item.ipoType}
+                  </p>
+                  <p className="mt-1 text-cyan-300">
+                    Match: {item.matchStatus}
+                  </p>
+                  <p className="text-amber-400">
+                    Identity verified: No
+                  </p>
+                </div>
+              ))}
             </>
           ) : (
             <p className="text-sm text-red-400">
-              {result.error || "Collection failed."}
+              {result.error || "Dry run failed."}
             </p>
           )}
         </div>

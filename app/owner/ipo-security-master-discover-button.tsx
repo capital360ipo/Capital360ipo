@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState } from "react";
@@ -9,34 +8,51 @@ type ContextInfo = {
   context: string;
 };
 
+type ScriptResult = {
+  url: string;
+  status: number | null;
+  length: number;
+  fetched: boolean;
+  matchCount: number;
+  error?: string | null;
+};
+
+type ReportCardScript = {
+  url: string;
+  status: number | null;
+  length: number;
+  fetched: boolean;
+  matches: ContextInfo[];
+  error?: string;
+};
+
 type DiscoverResult = {
   success?: boolean;
   mode?: string;
 
-  inspection?: {
-    pageUrl?: string;
-    reportsScriptUrl?: string;
-    nseMinScriptUrl?: string;
-    htmlLength?: number;
-    reportsScriptLength?: number;
-    nseMinScriptLength?: number;
-    htmlHttpStatus?: number;
-    reportsScriptHttpStatus?: number;
-    nseMinScriptHttpStatus?: number;
+  page?: {
+    url?: string;
+    status?: number;
+    length?: number;
   };
 
-  htmlContexts?: ContextInfo[];
-  reportsJavascriptContexts?: ContextInfo[];
-  metadataContexts?: ContextInfo[];
+  scriptDiscovery?: {
+    discoveredScriptCount?: number;
+    inspectedScriptCount?: number;
+    totalScriptBytesInspected?: number;
+    scriptUrls?: string[];
+  };
 
-  possibleApiPaths?: string[];
-  filenameMatches?: string[];
+  inlineScriptContexts?: ContextInfo[];
+  reportCardScripts?: ReportCardScript[];
+  allScriptResults?: ScriptResult[];
 
   safety?: {
     databaseWrites?: number;
-    filesDownloaded?: number;
-    externalDownloadEndpointsCalled?: number;
     databaseModified?: boolean;
+    securityMasterFilesDownloaded?: number;
+    externalDownloadEndpointsCalled?: number;
+    onlyOfficialNseScriptsInspected?: boolean;
   };
 
   nextStep?: string;
@@ -114,38 +130,15 @@ export default function IpoSecurityMasterDiscoverButton() {
     );
   }
 
-  function renderList(items?: string[]) {
-    if (!items?.length) {
-      return (
-        <p className="mt-2 text-sm text-amber-300">
-          No matching references found.
-        </p>
-      );
-    }
-
-    return (
-      <div className="mt-3 space-y-2">
-        {items.map((item, index) => (
-          <pre
-            key={`${item}-${index}`}
-            className="overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-900 p-3 text-xs text-cyan-300"
-          >
-            {item}
-          </pre>
-        ))}
-      </div>
-    );
-  }
-
   return (
     <section className="rounded-xl border border-cyan-800 bg-slate-900 p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-white">
-            NSE Security Master Discovery
+            NSE Security Master Discovery V14
           </h3>
           <p className="mt-1 text-sm text-slate-400">
-            Inspect official NSE report HTML and JavaScript.
+            Trace official NSE JavaScript and ReportCard metadata provider.
           </p>
         </div>
 
@@ -167,19 +160,19 @@ export default function IpoSecurityMasterDiscoverButton() {
                 NSE Inspection Completed
               </p>
 
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 {[
                   ["Mode", result.mode],
-                  ["HTML Length", result.inspection?.htmlLength],
-                  ["Reports Script Length", result.inspection?.reportsScriptLength],
-                  ["NSE Min Script Length", result.inspection?.nseMinScriptLength],
-                  ["HTML HTTP Status", result.inspection?.htmlHttpStatus],
-                  ["Reports Script HTTP Status", result.inspection?.reportsScriptHttpStatus],
-                  ["NSE Min Script HTTP Status", result.inspection?.nseMinScriptHttpStatus],
+                  ["Page HTTP Status", result.page?.status],
+                  ["HTML Length", result.page?.length],
+                  ["Scripts Discovered", result.scriptDiscovery?.discoveredScriptCount],
+                  ["Scripts Inspected", result.scriptDiscovery?.inspectedScriptCount],
+                  ["Total Script Bytes", result.scriptDiscovery?.totalScriptBytesInspected],
                   ["Database Writes", result.safety?.databaseWrites],
-                  ["Files Downloaded", result.safety?.filesDownloaded],
-                  ["External Download Calls", result.safety?.externalDownloadEndpointsCalled],
                   ["Database Modified", String(result.safety?.databaseModified)],
+                  ["Security Master Downloads", result.safety?.securityMasterFilesDownloaded],
+                  ["External Download Calls", result.safety?.externalDownloadEndpointsCalled],
+                  ["Official NSE Scripts Only", String(result.safety?.onlyOfficialNseScriptsInspected)],
                 ].map(([label, value]) => (
                   <div key={String(label)}>
                     <p className="text-xs text-slate-400">{label}</p>
@@ -192,37 +185,85 @@ export default function IpoSecurityMasterDiscoverButton() {
 
               <div className="mt-5">
                 <h4 className="font-semibold text-white">
-                  Filename Matches
+                  Discovered Script URLs
                 </h4>
-                {renderList(result.filenameMatches)}
+                <div className="mt-2 space-y-2">
+                  {result.scriptDiscovery?.scriptUrls?.length ? (
+                    result.scriptDiscovery.scriptUrls.map((url, index) => (
+                      <pre
+                        key={`${url}-${index}`}
+                        className="overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-900 p-3 text-xs text-cyan-300"
+                      >
+                        {url}
+                      </pre>
+                    ))
+                  ) : (
+                    <p className="text-sm text-amber-300">
+                      No script URLs found.
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="mt-5">
                 <h4 className="font-semibold text-white">
-                  Possible API Paths (Not Called)
+                  ReportCard Scripts — Important
                 </h4>
-                {renderList(result.possibleApiPaths)}
+
+                {result.reportCardScripts?.length ? (
+                  result.reportCardScripts.map((script, index) => (
+                    <div
+                      key={`${script.url}-${index}`}
+                      className="mt-3 rounded-lg border border-cyan-900 p-3"
+                    >
+                      <p className="break-all text-xs text-cyan-300">
+                        {script.url}
+                      </p>
+                      <p className="mt-2 text-xs text-slate-400">
+                        HTTP: {script.status ?? "—"} | Length: {script.length} | Matches: {script.matches.length}
+                      </p>
+                      {renderContexts(script.matches)}
+                    </div>
+                  ))
+                ) : (
+                  <p className="mt-2 text-sm text-amber-300">
+                    No ReportCard references found in inspected scripts.
+                  </p>
+                )}
               </div>
 
               <div className="mt-5">
                 <h4 className="font-semibold text-white">
-                  HTML Contexts
+                  Inline HTML Script Contexts
                 </h4>
-                {renderContexts(result.htmlContexts)}
+                {renderContexts(result.inlineScriptContexts)}
               </div>
 
               <div className="mt-5">
                 <h4 className="font-semibold text-white">
-                  Reports JavaScript Contexts
+                  All Script Inspection Results
                 </h4>
-                {renderContexts(result.reportsJavascriptContexts)}
-              </div>
 
-              <div className="mt-5">
-                <h4 className="font-semibold text-white">
-                  NSE Metadata Contexts
-                </h4>
-                {renderContexts(result.metadataContexts)}
+                <div className="mt-3 space-y-2">
+                  {result.allScriptResults?.map((script, index) => (
+                    <div
+                      key={`${script.url}-${index}`}
+                      className="rounded-lg border border-slate-700 p-3"
+                    >
+                      <p className="break-all text-xs text-cyan-300">
+                        {script.url}
+                      </p>
+                      <p className="mt-2 text-xs text-slate-300">
+                        HTTP: {script.status ?? "—"} | Length: {script.length} | Fetched: {String(script.fetched)} | Matches: {script.matchCount}
+                      </p>
+                      {script.error && (
+                        <p className="mt-1 text-xs text-amber-300">
+                          {script.error}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <p className="mt-4 text-xs text-slate-400">

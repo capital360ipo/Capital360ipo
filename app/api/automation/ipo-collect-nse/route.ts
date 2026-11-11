@@ -4,15 +4,13 @@ import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { requireApiRole } from "@/lib/require-api-role";
-import { runIpoMatching } from "@/lib/run-ipo-matching";
+import { normalizeCompanyName } from "@/lib/ipo-matching";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const NSE_URL =
-  "https://www.nseindia.com/companies-listing/corporate-public-issue-advertisements";
-
-const NSE_HOSTS = new Set(["www.nseindia.com", "nseindia.com"]);
+  "https://www.nseindia.com/market-data/new-stock-exchange-listings-recent";
 
 const HEADERS = {
   "User-Agent":
@@ -22,14 +20,22 @@ const HEADERS = {
   Referer: "https://www.nseindia.com/",
 };
 
-type AtomicSaveResult = {
-  success?: boolean;
-  queue_id?: string;
-  queue_inserted?: boolean;
-  queue_duplicate?: boolean;
-  evidence_inserted?: boolean;
-  evidence_duplicate?: boolean;
-  evidence_status?: string;
+type Listing = {
+  listingDate: string;
+  securityType: string;
+  symbol: string;
+  companyName: string;
+  series: string;
+  isin: string;
+  ipoType: "SME" | "Mainboard";
+};
+
+type QueueRecord = {
+  id: string;
+  company_name: string;
+  ipo_type: string | null;
+  candidate_id: string | null;
+  review_status: string;
 };
 
 function jsonResponse(body: unknown, status = 200) {
@@ -52,76 +58,105 @@ function cleanText(value: string): string {
     .trim();
 }
 
-function validDate(year: number, month: number, day: number): boolean {
-  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1) {
-    return false;
+function parseDate(value: string): string | null {
+  const months: Record<string, string> = {
+    jan: "01", feb: "02", mar: "03", apr: "04",
+    may: "05", jun: "06", jul: "07", aug: "08",
+    sep: "09", oct: "10", nov: "11", dec: "12",
+  };
+
+  const match = value.match(
+    /^\s*(\d{1,2})[-/\s]([A-Za-z]{3,}|[0-9]{1,2})[-/\s](\d{4})\s*$/
+  );
+
+  if (!match) return null;
+
+  const day = Number(match[1]);
+  const month = /^\d+$/.test(match[2])
+    ? Number(match[2])
+    : Number(months[match[2].slice(0, 3).toLowerCase()]);
+  const year = Number(match[3]);
+
+  if (
+    year < 1900 ||
+    year > 2100 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    return null;
   }
 
   const date = new Date(Date.UTC(year, month - 1, day));
 
-  return (
-    date.getUTCFullYear() === year &&
-    date.getUTCMonth() === month - 1 &&
-    date.getUTCDate() === day
-  );
-}
-
-function parseNseDate(value: string): string | null {
-  const months: Record<string, number> = {
-    jan: 1, feb: 2, mar: 3, apr: 4,
-    may: 5, jun: 6, jul: 7, aug: 8,
-    sep: 9, oct: 10, nov: 11, dec: 12,
-  };
-
-  const numeric = value.match(
-    /\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b/
-  );
-
-  if (numeric) {
-    const day = Number(numeric[1]);
-    const month = Number(numeric[2]);
-    const year = Number(numeric[3]);
-
-    if (!validDate(year, month, day)) return null;
-
-    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-  }
-
-  const named = value.match(
-    /\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})\b/i
-  );
-
-  if (named) {
-    const day = Number(named[1]);
-    const month = months[named[2].slice(0, 3).toLowerCase()];
-    const year = Number(named[3]);
-
-    if (!validDate(year, month, day)) return null;
-
-    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-  }
-
-  return null;
-}
-
-function getNseSourceUrl(href: string): string | null {
-  try {
-    const url = new URL(href, NSE_URL);
-
-    if (
-      url.protocol !== "https:" ||
-      !NSE_HOSTS.has(url.hostname) ||
-      url.username ||
-      url.password ||
-      url.port
-    ) {
-      return null;
-    }
-
-    return url.href;
-  } catch {
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
     return null;
   }
+
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function parseListings(html: string): Listing[] {
+  const rows = html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+  const listings: Listing[] = [];
+
+  for (const row of rows) {
+    const cells = [
+      ...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi),
+    ].map((cell) => cleanText(cell[1]));
+
+    if (cells.length < 6) continue;
+
+    const listingDate = parseDate(cells[0]);
+    const securityType = cells[1].trim();
+    const symbol = cells[2].trim().toUpperCase();
+    const companyName = cells[3].trim();
+    const series = cells[4].trim().toUpperCase();
+    const isin = cells[5].trim().toUpperCase();
+
+    if (!listingDate || !companyName || companyName.length < 3) {
+      continue;
+    }
+
+    // Bonds and other non-equity instruments are excluded.
+    if (!["equity", "sme"].includes(securityType.toLowerCase())) {
+      continue;
+    }
+
+    if (!/^[A-Z0-9._&-]{1,30}$/.test(symbol)) continue;
+    if (!/^[A-Z]{2}[A-Z0-9]{10}$/.test(isin)) continue;
+
+    // Debt-like series are not treated as IPO equity listings.
+    if (["N0", "N1", "N2", "N3"].includes(series)) continue;
+
+    let ipoType: "SME" | "Mainboard";
+
+    if (
+      securityType.toLowerCase() === "sme" ||
+      ["ST", "SM"].includes(series)
+    ) {
+      ipoType = "SME";
+    } else {
+      ipoType = "Mainboard";
+    }
+
+    listings.push({
+      listingDate,
+      securityType,
+      symbol,
+      companyName,
+      series,
+      isin,
+      ipoType,
+    });
+  }
+
+  return listings;
 }
 
 async function writeLog(
@@ -131,17 +166,17 @@ async function writeLog(
   const { error } = await supabaseAdmin
     .from("automation_logs")
     .insert({
-      task_name: "NSE IPO DRHP Collection",
+      task_name: "NSE Recent Equity Listing Collection",
       status,
       message: message.slice(0, 500),
     });
 
   if (error) {
-    console.error("NSE automation log failed:", error.message);
+    console.error("NSE listing log failed:", error.message);
   }
 }
 
-async function collectIpos() {
+async function collectListings() {
   const response = await fetch(NSE_URL, {
     method: "GET",
     cache: "no-store",
@@ -160,181 +195,129 @@ async function collectIpos() {
     throw new Error("NSE returned an empty or incomplete page.");
   }
 
-  const rows = html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+  const listings = parseListings(html);
 
-  const filings = new Map<
-    string,
-    {
-      companyName: string;
-      ipoType: string | null;
-      filingDate: string;
-      sourceUrl: string;
-      boardType: string;
-    }
-  >();
+  if (listings.length === 0) {
+    throw new Error(
+      "No Equity listing rows parsed. NSE page structure or response needs verification."
+    );
+  }
 
-  for (const row of rows) {
-    const cells = [
-      ...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi),
-    ].map((cell) => cleanText(cell[1]));
+  // Only pending/approved IPO queue records are considered.
+  const { data: queueRows, error: queueError } =
+    await supabaseAdmin
+      .from("ipo_import_queue")
+      .select(
+        "id, company_name, ipo_type, candidate_id, review_status"
+      )
+      .in("review_status", ["pending", "approved"])
+      .limit(5000);
 
-    if (cells.length < 4) continue;
+  if (queueError) {
+    throw new Error(`IPO queue read failed: ${queueError.message}`);
+  }
 
-    const companyName = cells[0];
-    const issueType = cells[1].toLowerCase();
-    const board = cells[2].toLowerCase();
-    const filingDate = parseNseDate(cells[3]);
+  const queue = (queueRows || []) as QueueRecord[];
 
-    if (
-      !companyName ||
-      companyName.length < 3 ||
-      !issueType.includes("ipo") ||
-      !filingDate
-    ) {
+  let detected = listings.length;
+  let matched = 0;
+  let unmatched = 0;
+  let evidenceInserted = 0;
+  let evidenceDuplicates = 0;
+  let ambiguous = 0;
+
+  for (const listing of listings) {
+    const normalizedListingName = normalizeCompanyName(
+      listing.companyName
+    );
+
+    const possibleMatches = queue.filter((item) => {
+      if (!item.ipo_type) return false;
+
+      const sameName =
+        normalizeCompanyName(item.company_name) ===
+        normalizedListingName;
+
+      const sameType =
+        item.ipo_type.toLowerCase() ===
+        listing.ipoType.toLowerCase();
+
+      return sameName && sameType;
+    });
+
+    // A company name alone is not verified identity.
+    if (possibleMatches.length === 0) {
+      unmatched++;
       continue;
     }
 
-    let ipoType: string | null = null;
-
-    if (board.includes("sme")) {
-      ipoType = "SME";
-    } else if (board.includes("main")) {
-      ipoType = "Mainboard";
+    // Multiple queue matches require manual resolution.
+    if (possibleMatches.length !== 1) {
+      ambiguous++;
+      continue;
     }
 
-    const links = [
-      ...row.matchAll(
-        /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi
-      ),
-    ];
-
-    // If an attachment link exists, it must pass NSE host validation.
-    // If no link exists, retain the official NSE listing page as the source.
-    let sourceUrl = NSE_URL;
-
-    if (links.length > 0) {
-      const validatedUrl = getNseSourceUrl(links[0][1]);
-
-      if (!validatedUrl) {
-        console.warn(
-          "Skipping NSE record with an invalid source URL:",
-          companyName
-        );
-        continue;
-      }
-
-      sourceUrl = validatedUrl;
-    }
-
-    const key = `${companyName}|${filingDate}|${ipoType ?? "unknown"}`;
-
-    filings.set(key, {
-      companyName,
-      ipoType,
-      filingDate,
-      sourceUrl,
-      boardType: cells[2],
-    });
-  }
-
-  if (filings.size === 0) {
-    throw new Error(
-      `No NSE records parsed. HTML length: ${html.length}; rows found: ${rows.length}. NSE page structure needs verification.`
-    );
-  }
-
-  let detected = 0;
-  let inserted = 0;
-  let duplicates = 0;
-  let evidenceInserted = 0;
-  let evidenceDuplicates = 0;
-
-  for (const filing of filings.values()) {
-    detected++;
+    const queueRecord = possibleMatches[0];
+    matched++;
 
     const contentHash = createHash("sha256")
       .update(
-        `NSE|${filing.companyName}|${filing.filingDate}|${filing.ipoType ?? ""}`
+        [
+          "NSE_RECENT_LISTING",
+          listing.listingDate,
+          listing.securityType,
+          listing.symbol,
+          listing.companyName,
+          listing.series,
+          listing.isin,
+        ].join("|")
       )
       .digest("hex");
 
-    const collectedAt = new Date().toISOString();
-
-    const queuePayload = {
-      source_name: "NSE",
-      source_url: filing.sourceUrl,
-      external_id: contentHash,
-      company_name: filing.companyName,
-      ipo_type: filing.ipoType,
-      drhp_filed_date: filing.filingDate,
-      detected_status: "drhp_filed",
-      raw_payload: {
-        company_name: filing.companyName,
-        filing_date: filing.filingDate,
-        ipo_type: filing.ipoType,
-        board_type: filing.boardType,
-        source_url: filing.sourceUrl,
-        source: "NSE",
-      },
-      content_hash: contentHash,
-      review_status: "pending",
-      collected_at: collectedAt,
-    };
-
     const evidencePayload = {
+      queue_id: queueRecord.id,
+      candidate_id: queueRecord.candidate_id,
       source_name: "NSE",
-      source_url: filing.sourceUrl,
-      evidence_type: "nse_csv_filing_record",
-      field_name: "drhp_filed_date",
-      field_value: filing.filingDate,
-      issuer_name: filing.companyName,
+      source_url: NSE_URL,
+      evidence_type: "nse_recent_listing_record",
+      field_name: "listing_date",
+      field_value: listing.listingDate,
+      issuer_name: listing.companyName,
       is_official_source: true,
+      validation_status: "unverified",
       content_hash: contentHash,
-      observed_at: collectedAt,
+      observed_at: new Date().toISOString(),
       metadata: {
-        evidence_scope: "NSE public issue advertisement filing",
-        board_type: filing.boardType,
-        issue_type: filing.ipoType,
-        related_date_column: "filing_date",
-        related_date_value: filing.filingDate,
+        security_type: listing.securityType,
+        symbol: listing.symbol,
+        company_name: listing.companyName,
+        series: listing.series,
+        isin: listing.isin,
+        ipo_type: listing.ipoType,
+        lifecycle_stage_proposed: "listed",
+        identity_match_status: "unverified",
         review_status: "pending_manual_review",
+        source_type: "NSE Recent Listing",
+        automatic_status_change: false,
       },
     };
 
-    // One database function call saves queue + evidence atomically.
-    const { data, error } = await supabaseAdmin.rpc(
-      "save_ipo_collection_record",
-      {
-        p_queue: queuePayload,
-        p_evidence: evidencePayload,
-      }
-    );
+    // Existing unique key prevents duplicate evidence records.
+    const { data, error } = await supabaseAdmin
+      .from("ipo_source_evidence")
+      .upsert(evidencePayload, {
+        onConflict: "queue_id,evidence_type,content_hash",
+        ignoreDuplicates: true,
+      })
+      .select("id");
 
     if (error) {
       throw new Error(
-        `NSE atomic collection failed for ${filing.companyName}: ${error.message}`
+        `Evidence save failed for ${listing.companyName}: ${error.message}`
       );
     }
 
-    const result = data as AtomicSaveResult | null;
-
-    if (
-      !result ||
-      result.success !== true ||
-      !result.queue_id
-    ) {
-      throw new Error(
-        `NSE atomic RPC returned an invalid result for ${filing.companyName}.`
-      );
-    }
-
-    if (result.queue_inserted === true) {
-      inserted++;
-    } else {
-      duplicates++;
-    }
-
-    if (result.evidence_inserted === true) {
+    if (data && data.length > 0) {
       evidenceInserted++;
     } else {
       evidenceDuplicates++;
@@ -343,84 +326,46 @@ async function collectIpos() {
 
   return {
     detected,
-    inserted,
-    duplicates,
+    matched,
+    unmatched,
+    ambiguous,
     evidenceInserted,
     evidenceDuplicates,
+    bondsAndNonEquityExcluded: true,
+    automaticListingUpdates: 0,
+    automaticPublication: 0,
   };
 }
 
 async function handleCollection() {
   try {
-    const collection = await collectIpos();
-
-    let matching: {
-      success: boolean;
-      mode?: string;
-      result?: unknown;
-      error?: string;
-    };
-
-    try {
-      const result = await runIpoMatching();
-
-      matching = {
-        success: true,
-        mode: "dry_run",
-        result,
-      };
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Matching failed";
-
-      console.error("NSE matching dry run failed:", message);
-      await writeLog("failed", `Matching Dry Run failed: ${message}`);
-
-      matching = {
-        success: false,
-        error: message,
-      };
-    }
+    const result = await collectListings();
 
     const message =
-      `Detected: ${collection.detected}, Inserted: ${collection.inserted}, Duplicates: ${collection.duplicates}, Evidence inserted: ${collection.evidenceInserted}, Evidence duplicates: ${collection.evidenceDuplicates}`;
+      `Detected: ${result.detected}; Matched: ${result.matched}; Unmatched: ${result.unmatched}; Ambiguous: ${result.ambiguous}; Evidence inserted: ${result.evidenceInserted}; Evidence duplicates: ${result.evidenceDuplicates}`;
 
     await writeLog("success", message);
 
     return jsonResponse({
       success: true,
-      status: matching.success ? "success" : "partial_success",
-      source: "NSE",
-
-      // Backward-compatible dashboard fields
-      detected: collection.detected,
-      inserted: collection.inserted,
-      duplicates: collection.duplicates,
-
-      // Detailed collection result
-      collection: {
-        success: true,
-        ...collection,
-        review_status: "pending",
-        evidence_status: "unverified",
-      },
-
-      // Matching is read-only; it does not approve or publish IPOs
-      matching,
+      source: "NSE Recent Listings",
+      collection: result,
       message,
     });
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Unknown collection error";
+      error instanceof Error
+        ? error.message
+        : "Unknown NSE listing collection error";
 
-    console.error("NSE IPO collection failed:", message);
+    console.error("NSE listing collection failed:", message);
     await writeLog("failed", message);
 
     return jsonResponse(
       {
         success: false,
-        source: "NSE",
-        error: "NSE IPO collection failed. Check server logs.",
+        source: "NSE Recent Listings",
+        error: "NSE listing collection failed. Check server logs.",
       },
       502
     );

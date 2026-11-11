@@ -1,3 +1,4 @@
+
 import "server-only";
 
 import { createHash } from "crypto";
@@ -17,6 +18,7 @@ const SEBI_HOSTS = new Set(["www.sebi.gov.in", "sebi.gov.in"]);
 
 const MAX_PDF_SIZE = 15 * 1024 * 1024;
 const MAX_PDF_LINKS = 5;
+const MAX_PAGE_SIZE = 3 * 1024 * 1024;
 
 type IpoType = "SME" | "Mainboard";
 
@@ -195,9 +197,12 @@ function isValidSebiUrl(url: URL): boolean {
 }
 
 function isValidSebiPdfUrl(url: URL): boolean {
+  const pathname = url.pathname.toLowerCase();
+
   const allowedPath =
-    url.pathname.startsWith("/sebi_data/attachdocs/") ||
-    url.pathname.startsWith("/filings/public-issues/");
+    pathname.startsWith("/sebi_data/attachdocs/") ||
+    pathname.startsWith("/sebi_data/commondocs/") ||
+    pathname.startsWith("/filings/public-issues/");
 
   return (
     url.protocol === "https:" &&
@@ -205,7 +210,7 @@ function isValidSebiPdfUrl(url: URL): boolean {
     !url.username &&
     !url.password &&
     !url.port &&
-    url.pathname.toLowerCase().endsWith(".pdf") &&
+    pathname.endsWith(".pdf") &&
     allowedPath
   );
 }
@@ -221,7 +226,9 @@ function extractPdfLinks(html: string, baseUrl: string): string[] {
 
   for (const link of links) {
     try {
-      const url = new URL(link[1], baseUrl);
+      const rawHref = link[1].replace(/&amp;/gi, "&").trim();
+
+      const url = new URL(rawHref, baseUrl);
 
       if (!isValidSebiPdfUrl(url)) continue;
 
@@ -319,19 +326,24 @@ async function fetchDocumentClassification(
       },
     });
 
-    if (!pageResponse.ok) return emptyResult;
+    if (!pageResponse.ok) {
+      return {
+        ...emptyResult,
+        status: `detail_page_http_${pageResponse.status}`,
+      };
+    }
 
     const pageSize = Number(
       pageResponse.headers.get("content-length") || 0
     );
 
-    if (pageSize > 3 * 1024 * 1024) {
+    if (pageSize > MAX_PAGE_SIZE) {
       return { ...emptyResult, status: "detail_page_too_large" };
     }
 
     const html = await pageResponse.text();
 
-    if (!html || html.length > 3 * 1024 * 1024) {
+    if (!html || html.length > MAX_PAGE_SIZE) {
       return { ...emptyResult, status: "invalid_detail_page" };
     }
 
@@ -343,10 +355,16 @@ async function fetchDocumentClassification(
 
     const detectedTypes: IpoType[] = [];
     const allSignals: string[] = [];
+
     let selectedPdfUrl: string | null = null;
     let selectedPdfHash: string | null = null;
+    let downloadAttempts = 0;
+    let downloadFailures = 0;
+    let parseFailures = 0;
 
     for (const pdfUrl of pdfLinks) {
+      downloadAttempts++;
+
       try {
         const pdfResponse = await fetch(pdfUrl, {
           method: "GET",
@@ -360,13 +378,19 @@ async function fetchDocumentClassification(
           },
         });
 
-        if (!pdfResponse.ok) continue;
+        if (!pdfResponse.ok) {
+          downloadFailures++;
+          continue;
+        }
 
         const contentLength = Number(
           pdfResponse.headers.get("content-length") || 0
         );
 
-        if (contentLength > MAX_PDF_SIZE) continue;
+        if (contentLength > MAX_PDF_SIZE) {
+          downloadFailures++;
+          continue;
+        }
 
         const buffer = Buffer.from(await pdfResponse.arrayBuffer());
 
@@ -375,27 +399,49 @@ async function fetchDocumentClassification(
           buffer.length > MAX_PDF_SIZE ||
           buffer.subarray(0, 5).toString("ascii") !== "%PDF-"
         ) {
+          downloadFailures++;
           continue;
         }
 
-        const parsed = await pdfParse(buffer);
+        let parsed;
+
+        try {
+          parsed = await pdfParse(buffer);
+        } catch (error) {
+          parseFailures++;
+
+          console.error(
+            "SEBI PDF parsing failed:",
+            error instanceof Error ? error.message : "Unknown PDF error"
+          );
+
+          continue;
+        }
+
         const pdfText = parsed.text.slice(0, 2_000_000);
 
+        if (!pdfText.trim()) {
+          parseFailures++;
+          continue;
+        }
+
         const classification = classifyIpoType(pdfText);
+
+        if (!selectedPdfUrl) {
+          selectedPdfUrl = pdfUrl;
+          selectedPdfHash = sha256(buffer);
+        }
 
         if (classification.ipoType) {
           detectedTypes.push(classification.ipoType);
           allSignals.push(...classification.signals);
-
-          if (!selectedPdfUrl) {
-            selectedPdfUrl = pdfUrl;
-            selectedPdfHash = sha256(buffer);
-          }
         }
       } catch (error) {
+        downloadFailures++;
+
         console.error(
-          "SEBI PDF extraction failed:",
-          error instanceof Error ? error.message : "Unknown PDF error"
+          "SEBI PDF download failed:",
+          error instanceof Error ? error.message : "Unknown download error"
         );
       }
     }
@@ -422,12 +468,39 @@ async function fetchDocumentClassification(
       };
     }
 
+    if (selectedPdfUrl) {
+      return {
+        pdfUrl: selectedPdfUrl,
+        ipoType: null,
+        status: "pdf_found_type_not_explicit",
+        signals: [],
+        pdfHash: selectedPdfHash,
+      };
+    }
+
+    if (parseFailures > 0) {
+      return {
+        pdfUrl: pdfLinks[0],
+        ipoType: null,
+        status: "pdf_parse_failed",
+        signals: [],
+        pdfHash: null,
+      };
+    }
+
+    if (downloadFailures > 0) {
+      return {
+        pdfUrl: pdfLinks[0],
+        ipoType: null,
+        status: "pdf_download_failed",
+        signals: [],
+        pdfHash: null,
+      };
+    }
+
     return {
-      pdfUrl: pdfLinks[0],
-      ipoType: null,
-      status: "pdf_found_type_not_explicit",
-      signals: [],
-      pdfHash: null,
+      ...emptyResult,
+      status: `pdf_processing_failed_${downloadAttempts}`,
     };
   } catch (error) {
     console.error(
@@ -540,7 +613,7 @@ async function collectIpos() {
         let sourceUrl: URL;
 
         try {
-          sourceUrl = new URL(link[1], SEBI_URL);
+          sourceUrl = new URL(link[1].replace(/&amp;/gi, "&"), SEBI_URL);
         } catch {
           continue;
         }
@@ -573,21 +646,25 @@ async function collectIpos() {
     let typeUpdated = 0;
     let documentErrors = 0;
 
+    const documentStatusCounts: Record<string, number> = {};
+
     for (const filing of filings.values()) {
       detected++;
 
-      // Official SEBI document extraction.
       const document = await fetchDocumentClassification(
         filing.sourceUrl
       );
+
+      documentStatusCounts[document.status] =
+        (documentStatusCounts[document.status] || 0) + 1;
 
       if (document.pdfUrl) documentFound++;
       if (document.ipoType) typeDetected++;
       else typeMissing++;
 
       if (
-        document.status === "document_fetch_failed" ||
-        document.status === "document_not_found"
+        document.status !== "type_detected" &&
+        document.status !== "pdf_found_type_not_explicit"
       ) {
         documentErrors++;
       }
@@ -646,7 +723,6 @@ async function collectIpos() {
         },
       };
 
-      // Save listing and its evidence atomically.
       const result = await saveCollectionRecord(
         queuePayload,
         listingEvidence
@@ -658,7 +734,6 @@ async function collectIpos() {
       if (result.evidence_inserted === true) evidenceInserted++;
       else evidenceDuplicates++;
 
-      // Save separate official PDF evidence.
       if (document.pdfUrl) {
         const hasVerifiedType = document.ipoType !== null;
 
@@ -706,8 +781,6 @@ async function collectIpos() {
           evidenceDuplicates++;
         }
 
-        // Existing pending rows may have NULL type.
-        // Never overwrite a non-null value or reviewed queue record.
         if (document.ipoType) {
           const { data: updatedRows, error: updateError } =
             await supabaseAdmin
@@ -778,6 +851,7 @@ async function collectIpos() {
         typeMissing,
         typeUpdated,
         documentErrors,
+        documentStatusCounts,
         message: collectionMessage,
       },
       matching: {
@@ -817,7 +891,6 @@ async function collectIpos() {
   }
 }
 
-// Manual collection: Owner/Admin only.
 export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
 
@@ -849,7 +922,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// Automatic collection: Vercel Cron only.
 export async function GET(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
 

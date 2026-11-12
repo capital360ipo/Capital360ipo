@@ -3,154 +3,189 @@
 
 import { useState } from "react";
 
-type ImportResult = {
+type ApiResult = {
   success?: boolean;
-  message?: string;
-  error?: string;
-  duplicate?: boolean;
   batch_id?: string;
-  file_name?: string;
-  total_rows?: number;
+  error?: string;
+  status?: string;
+  completed?: boolean;
   inserted_rows?: number;
-  columns?: number;
+  total_rows?: number;
+  progress_percent?: number;
+  remaining_rows?: number;
 };
 
 export default function NseImportForm() {
   const [file, setFile] = useState<File | null>(null);
+  const [batchId, setBatchId] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<ImportResult | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
 
-  async function handleImport() {
-    if (!file) {
-      setResult({ error: "Please select an NSE CSV.GZ file." });
-      return;
-    }
-
+  async function runImport(id: string) {
     setLoading(true);
-    setResult(null);
+    setError("");
+    setMessage("NSE records import ho rahe hain...");
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
+      for (let attempt = 0; attempt < 250; attempt++) {
+        const response = await fetch("/api/nse/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ batch_id: id }),
+        });
 
-      const response = await fetch("/api/nse/import", {
-        method: "POST",
-        body: formData,
-      });
+        const data: ApiResult = await response.json();
 
-      const data: ImportResult = await response.json();
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || "Import failed.");
+        }
 
-      if (!response.ok) {
-        setResult(data);
-        return;
+        const percent =
+          typeof data.progress_percent === "number"
+            ? data.progress_percent
+            : data.total_rows
+              ? Math.round(
+                  ((data.inserted_rows || 0) / data.total_rows) * 100
+                )
+              : 0;
+
+        setProgress(percent);
+        setMessage(
+          `Imported ${data.inserted_rows || 0} / ${data.total_rows || 0} records`
+        );
+
+        if (
+          data.completed === true ||
+          data.status === "completed" ||
+          data.remaining_rows === 0
+        ) {
+          setProgress(100);
+          setMessage("NSE Security Master import completed successfully!");
+          setLoading(false);
+          return;
+        }
       }
 
-      setResult(data);
-      setFile(null);
-
-      const input = document.getElementById(
-        "nse-security-file"
-      ) as HTMLInputElement | null;
-
-      if (input) input.value = "";
-    } catch {
-      setResult({
-        error: "Upload failed. Please check your internet connection.",
-      });
+      throw new Error(
+        "Import abhi complete nahi hua. Resume Import button se continue karein."
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unknown import error."
+      );
     } finally {
       setLoading(false);
     }
   }
 
+  async function handleUpload() {
+    if (!file) {
+      setError("Please select NSE .csv.gz file.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    setMessage("File securely upload ho rahi hai...");
+    setProgress(0);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/nse/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data: ApiResult = await response.json();
+
+      if (!response.ok || !data.success || !data.batch_id) {
+        throw new Error(data.error || "File upload failed.");
+      }
+
+      setBatchId(data.batch_id);
+      setMessage("Upload successful. Import starting...");
+
+      await runImport(data.batch_id);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unknown upload error."
+      );
+      setLoading(false);
+    }
+  }
+
   return (
-    <div className="space-y-5">
+    <div className="w-full max-w-2xl space-y-5 rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white">
       <div>
-        <label
-          htmlFor="nse-security-file"
-          className="mb-2 block text-sm font-medium text-slate-200"
-        >
-          Select NSE Security Master File
-        </label>
-
-        <input
-          id="nse-security-file"
-          type="file"
-          accept=".gz,.csv.gz,application/gzip"
-          disabled={loading}
-          onChange={(event) => {
-            setFile(event.target.files?.[0] ?? null);
-            setResult(null);
-          }}
-          className="block w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-emerald-500 file:px-3 file:py-2 file:font-semibold file:text-slate-950"
-        />
-
-        <p className="mt-2 text-xs text-slate-500">
-          Accepted format: .csv.gz · Maximum compressed size: 4 MB
+        <h2 className="text-xl font-semibold">
+          NSE Security Master Import
+        </h2>
+        <p className="mt-2 text-sm text-slate-400">
+          Upload the official NSE CM Security File (.csv.gz).
         </p>
       </div>
 
-      {file && (
-        <div className="rounded-xl border border-slate-700 bg-slate-950 p-3">
-          <p className="text-sm font-medium text-white">
-            {file.name}
-          </p>
-          <p className="mt-1 text-xs text-slate-400">
-            {(file.size / (1024 * 1024)).toFixed(2)} MB
-          </p>
-        </div>
-      )}
+      <input
+        type="file"
+        accept=".gz,.csv.gz"
+        disabled={loading}
+        onChange={(event) => {
+          setFile(event.target.files?.[0] || null);
+          setError("");
+        }}
+        className="block w-full rounded-lg border border-slate-700 bg-slate-800 p-3 text-sm"
+      />
 
       <button
         type="button"
-        onClick={handleImport}
-        disabled={!file || loading}
-        className="w-full rounded-xl bg-emerald-500 px-5 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={handleUpload}
+        disabled={loading || !file}
+        className="w-full rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {loading ? "Importing NSE Data..." : "Upload & Import NSE Data"}
+        {loading ? "Please wait..." : "Upload & Import NSE File"}
       </button>
 
-      {loading && (
-        <p className="text-sm text-amber-300">
-          Please keep this page open while the import is running.
-        </p>
-      )}
-
-      {result && (
-        <div
-          className={`rounded-xl border p-4 ${
-            result.success
-              ? "border-emerald-700 bg-emerald-950/40"
-              : "border-red-800 bg-red-950/40"
-          }`}
-        >
-          <h3 className="font-semibold text-white">
-            {result.success
-              ? "Import Successful"
-              : "Import Not Completed"}
-          </h3>
-
-          <p className="mt-2 text-sm text-slate-300">
-            {result.message || result.error}
+      {batchId && (
+        <div className="space-y-3 rounded-lg bg-slate-800 p-3">
+          <p className="break-all text-xs text-slate-400">
+            Batch ID: {batchId}
           </p>
 
-          {result.duplicate && (
-            <p className="mt-2 text-sm text-amber-300">
-              This file was already processed. No new import was started.
-            </p>
-          )}
+          <div className="h-3 overflow-hidden rounded-full bg-slate-700">
+            <div
+              className="h-full rounded-full bg-blue-500 transition-all"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
 
-          {result.success && (
-            <div className="mt-4 space-y-2 text-sm text-slate-300">
-              <p>File: {result.file_name}</p>
-              <p>Columns: {result.columns}</p>
-              <p>Total records: {result.total_rows}</p>
-              <p>Inserted records: {result.inserted_rows}</p>
-              <p className="break-all">
-                Batch ID: {result.batch_id}
-              </p>
-            </div>
+          <p className="text-sm">
+            Progress: {progress}%
+          </p>
+
+          {!loading && progress < 100 && (
+            <button
+              type="button"
+              onClick={() => runImport(batchId)}
+              className="w-full rounded-lg bg-emerald-600 px-4 py-3 font-semibold text-white"
+            >
+              Resume Import
+            </button>
           )}
         </div>
+      )}
+
+      {message && (
+        <p className="text-sm text-emerald-400">{message}</p>
+      )}
+
+      {error && (
+        <p className="break-words text-sm text-red-400">
+          {error}
+        </p>
       )}
     </div>
   );

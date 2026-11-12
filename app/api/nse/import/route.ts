@@ -320,7 +320,7 @@ export async function POST(request: Request) {
         (nextOffset / totalRows) * 100
       ),
     });
-  } catch (error) {
+    } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unknown import error.";
 
@@ -329,23 +329,13 @@ export async function POST(request: Request) {
     if (batchId) {
       await supabaseAdmin
         .from("nse_import_batches")
-        .update({
-          status: "failed",
-          metadata: {
-            error: message,
-          },
-        })
+        .update({ status: "failed" })
         .eq("id", batchId)
-        .eq("status", "processing");
+        .in("status", ["pending", "processing"]);
     }
 
     return NextResponse.json(
-      {
-        success: false,
-        error: message,
-        batch_id: batchId,
-      },
+      { success: false, error: message, batch_id: batchId },
       { status: 500 }
     );
   }
-}

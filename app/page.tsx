@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -26,12 +25,6 @@ type GMP = {
 
 type Category = "current" | "upcoming" | "listed";
 
-type IPOGroups = {
-  current: IPO[];
-  upcoming: IPO[];
-  listed: IPO[];
-};
-
 function todayDate() {
   const now = new Date();
   const year = now.getFullYear();
@@ -57,20 +50,18 @@ function formatDate(date: string | null) {
 function getCategory(ipo: IPO, today: string): Category {
   const status = (ipo.status || "").toLowerCase().trim();
 
-  // IPO listed status or listing date reached
   if (status.includes("listed")) return "listed";
 
   if (ipo.listing_date && ipo.listing_date <= today) {
     return "listed";
   }
 
-  // Opening date is in the future
   if (ipo.open_date && ipo.open_date > today) {
     return "upcoming";
   }
 
-  // IPO has opened or its closing date has passed,
-  // but listing has not happened yet.
+  // Closing date निकलने के बाद भी listing नहीं हुई,
+  // तो IPO Current में ही रहेगा।
   if (
     (ipo.open_date && ipo.open_date <= today) ||
     (ipo.close_date && ipo.close_date <= today) ||
@@ -228,14 +219,10 @@ function IPOCard({
 export default function Home() {
   const [ipos, setIpos] = useState<IPO[]>([]);
   const [gmpData, setGmpData] = useState<GMP[]>([]);
-
-  const [mainboardExpanded, setMainboardExpanded] = useState(true);
-  const [smeExpanded, setSmeExpanded] = useState(false);
-
-  const [mainboardTab, setMainboardTab] =
+  const [board, setBoard] = useState<"mainboard" | "sme">("mainboard");
+  const [selectedCategory, setSelectedCategory] =
     useState<Category>("current");
-  const [smeTab, setSmeTab] = useState<Category>("current");
-
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -246,10 +233,7 @@ export default function Home() {
         const { data, error: ipoError } = await supabase
           .from("ipo_master")
           .select("*")
-          .order("open_date", {
-            ascending: true,
-            nullsFirst: false,
-          });
+          .order("open_date", { ascending: true, nullsFirst: false });
 
         if (ipoError) throw ipoError;
 
@@ -291,176 +275,64 @@ export default function Home() {
     return map;
   }, [gmpData]);
 
-  const groupedIPOs = useMemo(() => {
-    const mainboard: IPOGroups = {
-      current: [],
-      upcoming: [],
-      listed: [],
-    };
+  const filteredIPOs = useMemo(() => {
+    return ipos.filter((ipo) => {
+      const matchesBoard =
+        board === "sme" ? isSME(ipo) : !isSME(ipo);
 
-    const sme: IPOGroups = {
-      current: [],
-      upcoming: [],
-      listed: [],
-    };
+      const matchesSearch = ipo.company_name
+        .toLowerCase()
+        .includes(search.trim().toLowerCase());
 
-    const searchText = search.trim().toLowerCase();
+      return matchesBoard && matchesSearch;
+    });
+  }, [ipos, board, search]);
 
-    for (const ipo of ipos) {
-      if (
-        searchText &&
-        !ipo.company_name.toLowerCase().includes(searchText)
-      ) {
-        continue;
-      }
+  const selectedIPOs = useMemo(() => {
+    const items = filteredIPOs.filter(
+      (ipo) => getCategory(ipo, today) === selectedCategory
+    );
 
-      const category = getCategory(ipo, today);
-      const target = isSME(ipo) ? sme : mainboard;
-
-      target[category].push(ipo);
+    if (selectedCategory === "current") {
+      return items.sort((a, b) =>
+        (a.close_date || "9999-12-31").localeCompare(
+          b.close_date || "9999-12-31"
+        )
+      );
     }
 
-    // Current IPOs: nearest closing date first
-    const sortCurrent = (a: IPO, b: IPO) =>
-      (a.close_date || "9999-12-31").localeCompare(
-        b.close_date || "9999-12-31"
+    if (selectedCategory === "upcoming") {
+      return items.sort((a, b) =>
+        (a.open_date || "9999-12-31").localeCompare(
+          b.open_date || "9999-12-31"
+        )
       );
-
-    // Upcoming IPOs: nearest opening date first
-    const sortUpcoming = (a: IPO, b: IPO) =>
-      (a.open_date || "9999-12-31").localeCompare(
-        b.open_date || "9999-12-31"
-      );
-
-    // Listed IPOs: latest listing first
-    const sortListed = (a: IPO, b: IPO) =>
-      (b.listing_date || "").localeCompare(
-        a.listing_date || ""
-      );
-
-    for (const group of [mainboard, sme]) {
-      group.current.sort(sortCurrent);
-      group.upcoming.sort(sortUpcoming);
-      group.listed.sort(sortListed);
     }
 
-    return { mainboard, sme };
-  }, [ipos, search, today]);
+    return items.sort((a, b) =>
+      (b.listing_date || "").localeCompare(a.listing_date || "")
+    );
+  }, [filteredIPOs, selectedCategory, today]);
 
-  const tabOptions: {
+  const categoryOptions: {
     key: Category;
     label: string;
   }[] = [
-    { key: "current", label: "Current" },
-    { key: "upcoming", label: "Upcoming" },
-    { key: "listed", label: "Listed" },
+    { key: "current", label: "Current IPO" },
+    { key: "upcoming", label: "Upcoming IPO" },
+    { key: "listed", label: "Listed IPO" },
   ];
 
-  function renderBoardPanel({
-    title,
-    expanded,
-    onToggle,
-    activeTab,
-    onTabChange,
-    groups,
-  }: {
-    title: string;
-    expanded: boolean;
-    onToggle: () => void;
-    activeTab: Category;
-    onTabChange: (tab: Category) => void;
-    groups: IPOGroups;
-  }) {
-    const activeItems = groups[activeTab];
+  const selectedLabel =
+    categoryOptions.find((item) => item.key === selectedCategory)?.label ||
+    "Current IPO";
 
-    return (
-      <section className="mt-5 overflow-hidden rounded-2xl border border-white/10 bg-[#101a2b]">
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={expanded}
-          className="flex w-full items-center justify-between gap-3 px-4 py-5 text-left transition hover:bg-white/[0.03] sm:px-6"
-        >
-          <div>
-            <h2 className="text-base font-black tracking-wider text-white sm:text-lg">
-              {title}
-            </h2>
-            <p className="mt-1 text-xs text-slate-500">
-              {expanded
-                ? "IPO categories are open"
-                : "Tap to view IPO categories"}
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-bold text-slate-300">
-              {groups.current.length +
-                groups.upcoming.length +
-                groups.listed.length} IPOs
-            </span>
-
-            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white/5 text-lg text-emerald-400">
-              {expanded ? "⌃" : "⌄"}
-            </span>
-          </div>
-        </button>
-
-        {expanded && (
-          <div className="border-t border-white/10 px-3 pb-5 pt-4 sm:px-5">
-            <div className="grid grid-cols-3 gap-2 rounded-xl bg-[#080e1b] p-1.5">
-              {tabOptions.map((tab) => {
-                const selected = activeTab === tab.key;
-                const count = groups[tab.key].length;
-
-                return (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => onTabChange(tab.key)}
-                    className={`rounded-lg px-2 py-3 text-xs font-bold transition sm:text-sm ${
-                      selected
-                        ? "bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-950/20"
-                        : "text-slate-400 hover:bg-white/5 hover:text-white"
-                    }`}
-                  >
-                    {tab.label}
-                    <span className="ml-1.5 opacity-80">
-                      ({count})
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="mt-5">
-              {activeItems.length > 0 ? (
-                <div className="grid gap-4 lg:grid-cols-2">
-                  {activeItems.map((ipo) => (
-                    <IPOCard
-                      key={ipo.id}
-                      ipo={ipo}
-                      gmp={latestGmp.get(ipo.id)}
-                      category={activeTab}
-                      today={today}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-2xl border border-dashed border-white/10 bg-[#0b1423] px-5 py-9 text-center">
-                  <p className="font-semibold text-slate-300">
-                    फिलहाल इस श्रेणी में कोई IPO उपलब्ध नहीं है।
-                  </p>
-                  <p className="mt-2 text-xs text-slate-500">
-                    नई जानकारी उपलब्ध होने पर यहाँ दिखाई जाएगी।
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </section>
-    );
-  }
+  const sectionSubtitle =
+    selectedCategory === "current"
+      ? "खुले हुए और Listing का इंतजार कर रहे IPO"
+      : selectedCategory === "upcoming"
+        ? "आने वाले IPO — Opening Date के अनुसार"
+        : "लिस्ट हो चुके IPO — नवीनतम Listing पहले";
 
   return (
     <main className="min-h-screen bg-[#080e1b] text-white">
@@ -492,8 +364,43 @@ export default function Home() {
           </Link>
         </section>
 
-        {/* SEARCH */}
-        <section className="mt-6">
+        {/* ORIGINAL MAINBOARD / SME TABS */}
+        <section className="mt-7">
+          <div className="grid grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-[#101a2b] p-2">
+            <button
+              type="button"
+              onClick={() => {
+                setBoard("mainboard");
+                setDropdownOpen(false);
+              }}
+              className={`rounded-xl px-4 py-4 text-sm font-black transition ${
+                board === "mainboard"
+                  ? "bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-950/20"
+                  : "text-slate-400 hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              MAINBOARD
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setBoard("sme");
+                setDropdownOpen(false);
+              }}
+              className={`rounded-xl px-4 py-4 text-sm font-black transition ${
+                board === "sme"
+                  ? "bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-950/20"
+                  : "text-slate-400 hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              SME
+            </button>
+          </div>
+        </section>
+
+        {/* SEARCH - ORIGINAL STYLE */}
+        <section className="mt-5">
           <label htmlFor="ipo-search" className="sr-only">
             Search IPO company
           </label>
@@ -514,7 +421,48 @@ export default function Home() {
           </div>
         </section>
 
-        {/* LOADING / ERROR / BOARD PANELS */}
+        {/* COMPACT IPO DROPDOWN */}
+        {!loading && !error && (
+          <section className="mt-5">
+            <div className="relative inline-block">
+              <button
+                type="button"
+                onClick={() => setDropdownOpen((previous) => !previous)}
+                aria-expanded={dropdownOpen}
+                className="inline-flex items-center gap-3 rounded-lg border border-white/10 bg-[#101a2b] px-3 py-2 text-xs font-bold text-slate-200 transition hover:border-emerald-400/50 hover:text-emerald-300"
+              >
+                {selectedLabel}
+                <span className="text-emerald-400">
+                  {dropdownOpen ? "⌃" : "⌄"}
+                </span>
+              </button>
+
+              {dropdownOpen && (
+                <div className="absolute left-0 top-full z-30 mt-2 w-40 overflow-hidden rounded-xl border border-white/10 bg-[#111a2b] p-1.5 shadow-2xl">
+                  {categoryOptions.map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCategory(option.key);
+                        setDropdownOpen(false);
+                      }}
+                      className={`block w-full rounded-lg px-3 py-2.5 text-left text-xs font-semibold transition ${
+                        selectedCategory === option.key
+                          ? "bg-emerald-400/10 text-emerald-300"
+                          : "text-slate-300 hover:bg-white/5 hover:text-white"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* LOADING / ERROR / SELECTED IPO SECTION */}
         {loading ? (
           <div className="flex min-h-64 flex-col items-center justify-center">
             <div className="h-9 w-9 animate-spin rounded-full border-4 border-slate-700 border-t-emerald-400" />
@@ -532,31 +480,50 @@ export default function Home() {
             </p>
           </div>
         ) : (
-          <>
-            {renderBoardPanel({
-              title: "MAINBOARD",
-              expanded: mainboardExpanded,
-              onToggle: () =>
-                setMainboardExpanded((previous) => !previous),
-              activeTab: mainboardTab,
-              onTabChange: setMainboardTab,
-              groups: groupedIPOs.mainboard,
-            })}
+          <section className="mt-8">
+            <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-black text-white sm:text-2xl">
+                  {selectedLabel}s
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  {sectionSubtitle}
+                </p>
+              </div>
 
-            {renderBoardPanel({
-              title: "SME",
-              expanded: smeExpanded,
-              onToggle: () =>
-                setSmeExpanded((previous) => !previous),
-              activeTab: smeTab,
-              onTabChange: setSmeTab,
-              groups: groupedIPOs.sme,
-            })}
-          </>
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-bold text-slate-300">
+                {selectedIPOs.length} IPO
+                {selectedIPOs.length === 1 ? "" : "s"}
+              </span>
+            </div>
+
+            {selectedIPOs.length > 0 ? (
+              <div className="grid gap-4 lg:grid-cols-2">
+                {selectedIPOs.map((ipo) => (
+                  <IPOCard
+                    key={ipo.id}
+                    ipo={ipo}
+                    gmp={latestGmp.get(ipo.id)}
+                    category={selectedCategory}
+                    today={today}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-white/10 bg-[#101a2b] px-5 py-9 text-center">
+                <p className="font-semibold text-slate-300">
+                  फिलहाल कोई IPO उपलब्ध नहीं है।
+                </p>
+                <p className="mt-2 text-xs text-slate-500">
+                  नई जानकारी उपलब्ध होने पर यहाँ दिखाई जाएगी।
+                </p>
+              </div>
+            )}
+          </section>
         )}
 
         {/* DISCLAIMER */}
-        <section className="mt-10 rounded-2xl border border-amber-400/15 bg-amber-400/5 p-5">
+        <section className="mt-12 rounded-2xl border border-amber-400/15 bg-amber-400/5 p-5">
           <p className="text-sm font-bold text-amber-300">
             Important Information
           </p>

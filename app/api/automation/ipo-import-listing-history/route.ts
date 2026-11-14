@@ -282,7 +282,16 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const formData = await request.formData();
+    const boundedBody = await readLimitedBody(
+  request,
+  MAX_REQUEST_SIZE
+);
+
+const formData = await new Response(boundedBody, {
+  headers: {
+    "content-type": request.headers.get("content-type") || "",
+  },
+}).formData();
     const file = formData.get("file");
 
     if (!(file instanceof File)) {

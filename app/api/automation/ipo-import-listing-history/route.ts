@@ -10,6 +10,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024;
+const MAX_REQUEST_SIZE = MAX_FILE_SIZE + 64 * 1024;
 const MAX_ROWS = 2000;
 const CONCURRENCY = 8;
 
@@ -48,18 +49,36 @@ type ListingRecord = {
   metadata: Record<string, unknown>;
 };
 
-const MAX_REQUEST_SIZE = MAX_FILE_SIZE + 64 * 1024;
+class RequestTooLargeError extends Error {
+  constructor() {
+    super("Request body is too large.");
+    this.name = "RequestTooLargeError";
+  }
+}
+
+function jsonResponse(body: unknown, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
 
 async function readLimitedBody(
   request: NextRequest,
   maxBytes: number
 ): Promise<Uint8Array> {
-  const contentLength = Number(
-    request.headers.get("content-length") || 0
-  );
+  const contentLength = request.headers.get("content-length");
 
-  if (contentLength > maxBytes) {
-    throw new Error("Request body is too large.");
+  if (contentLength) {
+    const declaredLength = Number(contentLength);
+
+    if (
+      !Number.isSafeInteger(declaredLength) ||
+      declaredLength < 0 ||
+      declaredLength > maxBytes
+    ) {
+      throw new RequestTooLargeError();
+    }
   }
 
   if (!request.body) {
@@ -80,7 +99,7 @@ async function readLimitedBody(
 
       if (total > maxBytes) {
         await reader.cancel();
-        throw new Error("Request body is too large.");
+        throw new RequestTooLargeError();
       }
 
       chunks.push(value);
@@ -98,12 +117,6 @@ async function readLimitedBody(
   }
 
   return result;
-}
-function jsonResponse(body: unknown, status = 200) {
-  return NextResponse.json(body, {
-    status,
-    headers: { "Cache-Control": "no-store" },
-  });
 }
 
 function hash(value: string): string {
@@ -283,15 +296,21 @@ export async function POST(request: NextRequest) {
 
   try {
     const boundedBody = await readLimitedBody(
-  request,
-  MAX_REQUEST_SIZE
-);
+      request,
+      MAX_REQUEST_SIZE
+    );
 
-const formData = await new Response(boundedBody, {
-  headers: {
-    "content-type": request.headers.get("content-type") || "",
-  },
-}).formData();
+    const bodyBuffer = boundedBody.buffer.slice(
+      boundedBody.byteOffset,
+      boundedBody.byteOffset + boundedBody.byteLength
+    ) as ArrayBuffer;
+
+    const formData = await new Response(bodyBuffer, {
+      headers: {
+        "content-type": request.headers.get("content-type") || "",
+      },
+    }).formData();
+
     const file = formData.get("file");
 
     if (!(file instanceof File)) {
@@ -320,7 +339,11 @@ const formData = await new Response(boundedBody, {
         const symbol = record["Symbol"].trim().toUpperCase();
         const listingDate = parseDate(record["Listed On"]);
 
-        if (!companyName || companyName.length < 3 || companyName.length > 250) {
+        if (
+          !companyName ||
+          companyName.length < 3 ||
+          companyName.length > 250
+        ) {
           throw new Error(`Invalid company name in CSV row ${rowNumber}.`);
         }
 
@@ -335,23 +358,35 @@ const formData = await new Response(boundedBody, {
         const issuePrice = requiredAmount(
           record["Issue Price"], "Issue Price", rowNumber
         );
+
         const listingDayClose = requiredAmount(
           record["Listing Day Close"], "Listing Day Close", rowNumber
         );
+
         const listingDayGain = requiredAmount(
-          record["Listing Day Gain/Loss Change"], "Listing Day Gain/Loss Change", rowNumber
+          record["Listing Day Gain/Loss Change"],
+          "Listing Day Gain/Loss Change",
+          rowNumber
         );
+
         const listingDayGainPercent = requiredAmount(
-          record["Listing Day Gain/Loss Percentage Change"], "Listing Day Gain/Loss Percentage Change", rowNumber
+          record["Listing Day Gain/Loss Percentage Change"],
+          "Listing Day Gain/Loss Percentage Change",
+          rowNumber
         );
+
         const ltp = requiredAmount(
           record["LTP"], "LTP", rowNumber
         );
+
         const currentGain = requiredAmount(
           record["Gain/Loss Change"], "Gain/Loss Change", rowNumber
         );
+
         const currentGainPercent = requiredAmount(
-          record["Gain/Loss Percentage Change"], "Gain/Loss Percentage Change", rowNumber
+          record["Gain/Loss Percentage Change"],
+          "Gain/Loss Percentage Change",
+          rowNumber
         );
 
         if (issuePrice !== null && issuePrice <= 0) {
@@ -398,7 +433,6 @@ const formData = await new Response(boundedBody, {
       }
     );
 
-    // Repeated symbols within the uploaded file are skipped.
     const seenSymbols = new Set<string>();
     const uniqueRecords: ListingRecord[] = [];
     let duplicateInFile = 0;
@@ -419,8 +453,6 @@ const formData = await new Response(boundedBody, {
     let duplicateInDatabase = 0;
     const errors: string[] = [];
 
-    // Small controlled concurrency. Database unique index prevents
-    // duplicate symbols, including concurrent imports.
     for (let i = 0; i < uniqueRecords.length; i += CONCURRENCY) {
       const batch = uniqueRecords.slice(i, i + CONCURRENCY);
 
@@ -479,6 +511,13 @@ const formData = await new Response(boundedBody, {
         "Imported records remain pending review. No IPO identity verification, ipo_master linking, lifecycle update, approval or publication was performed. LTP and current gain fields represent the CSV export snapshot only.",
     });
   } catch (error) {
+    if (error instanceof RequestTooLargeError) {
+      return jsonResponse(
+        { success: false, error: "Request body is too large." },
+        413
+      );
+    }
+
     const message =
       error instanceof Error
         ? error.message
@@ -489,7 +528,7 @@ const formData = await new Response(boundedBody, {
     return jsonResponse(
       {
         success: false,
-        error: message,
+        error: "CSV import failed. Please verify the file format and try again.",
         automaticPublication: 0,
       },
       400

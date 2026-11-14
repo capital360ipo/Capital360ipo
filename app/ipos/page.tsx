@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import SiteHeader from "@/components/SiteHeader";
 import { supabase } from "@/lib/supabase";
 
 type IPO = {
@@ -109,7 +110,11 @@ function IPOCard({
         </div>
 
         <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-teal-700 ring-1 ring-teal-100">
-          {pipeline ? "DRHP Filed" : category === "Other" ? ipo.status || "IPO" : category}
+          {pipeline
+            ? "DRHP Filed"
+            : category === "Other"
+              ? ipo.status || "IPO"
+              : category}
         </span>
       </div>
 
@@ -216,7 +221,6 @@ export default function IPOListPage() {
       .filter((ipo) => filterByType(ipo, typeFilter));
 
     const pipeline = available.filter(isDrhpPipeline);
-
     const regular = available.filter((ipo) => !isDrhpPipeline(ipo));
 
     const main = regular.filter((ipo) => {
@@ -254,20 +258,7 @@ export default function IPOListPage() {
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4">
-          <Link href="/" className="text-2xl font-black tracking-tight">
-            Capital<span className="text-teal-600">360</span>IPO
-          </Link>
-
-          <Link
-            href="/"
-            className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-teal-700"
-          >
-            ← Home
-          </Link>
-        </div>
-      </header>
+      <SiteHeader />
 
       <section className="mx-auto max-w-7xl px-5 py-10 sm:py-14">
         <div className="overflow-hidden rounded-3xl bg-gradient-to-br from-slate-950 via-slate-800 to-teal-950 px-6 py-10 text-white shadow-xl sm:px-10 sm:py-14">

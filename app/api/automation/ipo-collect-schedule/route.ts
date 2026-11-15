@@ -1,4 +1,3 @@
-
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -26,6 +25,21 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { "Cache-Control": "no-store" },
   });
+}
+
+function getErrorDetails(error: unknown) {
+  const err = error as Error & {
+    cause?: {
+      code?: string;
+      message?: string;
+    };
+  };
+
+  return {
+    error: err?.message || "Unknown error",
+    cause: err?.cause?.message ?? null,
+    causeCode: err?.cause?.code ?? null,
+  };
 }
 
 function findArrays(value: unknown, depth = 0): unknown[][] {
@@ -69,12 +83,20 @@ function getObjectKeys(value: unknown): string[] {
 }
 
 async function fetchNseSchedule() {
-  const pageResponse = await fetch(NSE_PAGE, {
-    method: "GET",
-    cache: "no-store",
-    signal: AbortSignal.timeout(20000),
-    headers: HEADERS,
-  });
+  let pageResponse: Response;
+
+  try {
+    pageResponse = await fetch(NSE_PAGE, {
+      method: "GET",
+      cache: "no-store",
+      signal: AbortSignal.timeout(20000),
+      headers: HEADERS,
+    });
+  } catch (error) {
+    throw new Error(
+      `NSE_PAGE_CONNECTION_FAILED: ${getErrorDetails(error).error}; ${getErrorDetails(error).cause ?? ""}`
+    );
+  }
 
   if (!pageResponse.ok) {
     throw new Error(
@@ -91,21 +113,28 @@ async function fetchNseSchedule() {
     [pageResponse.headers.get("set-cookie") ?? ""];
 
   const cookie = cookies
-    .flatMap((value) => value.split(","))
     .map((value) => value.split(";")[0].trim())
     .filter(Boolean)
     .join("; ");
 
-  const apiResponse = await fetch(NSE_API, {
-    method: "GET",
-    cache: "no-store",
-    redirect: "error",
-    signal: AbortSignal.timeout(25000),
-    headers: {
-      ...HEADERS,
-      ...(cookie ? { Cookie: cookie } : {}),
-    },
-  });
+  let apiResponse: Response;
+
+  try {
+    apiResponse = await fetch(NSE_API, {
+      method: "GET",
+      cache: "no-store",
+      redirect: "error",
+      signal: AbortSignal.timeout(25000),
+      headers: {
+        ...HEADERS,
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+    });
+  } catch (error) {
+    throw new Error(
+      `NSE_API_CONNECTION_FAILED: ${getErrorDetails(error).error}; ${getErrorDetails(error).cause ?? ""}`
+    );
+  }
 
   if (!apiResponse.ok) {
     throw new Error(
@@ -113,7 +142,13 @@ async function fetchNseSchedule() {
     );
   }
 
-  const payload: unknown = await apiResponse.json();
+  let payload: unknown;
+
+  try {
+    payload = await apiResponse.json();
+  } catch {
+    throw new Error("NSE API returned invalid JSON.");
+  }
 
   const arrays = findArrays(payload);
 
@@ -133,88 +168,101 @@ async function fetchNseSchedule() {
   };
 }
 
-export async function POST(request: NextRequest) {
-  const origin = request.headers.get("origin");
+async function authorizeOwner(request?: NextRequest) {
+  if (request) {
+    const origin = request.headers.get("origin");
 
-  if (!origin || origin !== request.nextUrl.origin) {
-    return jsonResponse(
-      { success: false, error: "Invalid request origin." },
-      403
-    );
+    if (!origin || origin !== request.nextUrl.origin) {
+      return {
+        authorized: false as const,
+        response: jsonResponse(
+          { success: false, error: "Invalid request origin." },
+          403
+        ),
+      };
+    }
   }
 
   const auth = await requireApiRole(["owner", "admin"]);
+
+  if (!auth.authorized) {
+    return {
+      authorized: false as const,
+      response: auth.response,
+    };
+  }
+
+  return { authorized: true as const };
+}
+
+async function runReadOnlyTest() {
+  const result = await fetchNseSchedule();
+
+  return {
+    success: true,
+    source: "NSE Official Upcoming IPO Schedule",
+    mode: "READ_ONLY_TEST",
+    detected: result.candidate.length,
+    responseKeys: getObjectKeys(result.payload),
+    recordKeys: getObjectKeys(result.candidate),
+    preview: result.candidate.slice(0, 10),
+    databaseWrites: 0,
+    automaticPublication: 0,
+    message:
+      "NSE schedule data fetched successfully. No database records were changed.",
+  };
+}
+
+export async function POST(request: NextRequest) {
+  const auth = await authorizeOwner(request);
 
   if (!auth.authorized) {
     return auth.response;
   }
 
   try {
-    const result = await fetchNseSchedule();
-
-    const { payload, candidate } = result;
-
-    return jsonResponse({
-      success: true,
-      source: "NSE Official Upcoming IPO Schedule",
-      mode: "READ_ONLY_TEST",
-      detected: candidate.length,
-      responseKeys: getObjectKeys(payload),
-      recordKeys: getObjectKeys(candidate),
-      preview: candidate.slice(0, 10),
-      databaseWrites: 0,
-      automaticPublication: 0,
-      message:
-        "NSE schedule data fetched successfully. No database records were changed.",
-    });
+    return jsonResponse(await runReadOnlyTest());
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Unknown NSE schedule collection error";
+    const details = getErrorDetails(error);
 
-    console.error("NSE schedule test failed:", message);
+    console.error("NSE schedule POST test failed:", details);
 
     return jsonResponse(
       {
         success: false,
         source: "NSE Official Upcoming IPO Schedule",
         mode: "READ_ONLY_TEST",
-        error: message,
+        ...details,
         databaseWrites: 0,
       },
       502
     );
   }
 }
+
 export async function GET() {
-  const auth = await requireApiRole(["owner", "admin"]);
+  const auth = await authorizeOwner();
 
   if (!auth.authorized) {
     return auth.response;
   }
 
   try {
-    const result = await fetchNseSchedule();
-
-    return jsonResponse({
-      success: true,
-      source: "NSE Official Upcoming IPO Schedule",
-      mode: "READ_ONLY_TEST",
-      detected: result.candidate.length,
-      responseKeys: getObjectKeys(result.payload),
-      recordKeys: getObjectKeys(result.candidate),
-      preview: result.candidate.slice(0, 10),
-      databaseWrites: 0,
-      automaticPublication: 0,
-    });
+    return jsonResponse(await runReadOnlyTest());
   } catch (error) {
-    return jsonResponse({
-      success: false,
-      mode: "READ_ONLY_TEST",
-      error:
-        error instanceof Error ? error.message : "Unknown error",
-      databaseWrites: 0,
-    }, 502);
+    const details = getErrorDetails(error);
+
+    console.error("NSE schedule GET test failed:", details);
+
+    return jsonResponse(
+      {
+        success: false,
+        source: "NSE Official Upcoming IPO Schedule",
+        mode: "READ_ONLY_TEST",
+        ...details,
+        databaseWrites: 0,
+      },
+      502
+    );
   }
 }

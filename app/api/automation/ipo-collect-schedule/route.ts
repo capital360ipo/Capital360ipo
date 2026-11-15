@@ -42,52 +42,69 @@ function getErrorDetails(error: unknown) {
   };
 }
 
-function findArrays(value: unknown, depth = 0): unknown[][] {
-  if (
-    depth > 8 ||
-    value === null ||
-    typeof value !== "object"
-  ) {
-    return [];
+function inspectStructure(
+  value: unknown,
+  path = "$",
+  depth = 0,
+  result: Array<{
+    path: string;
+    length: number;
+    firstRecordKeys: string[];
+  }> = []
+) {
+  if (depth > 7 || value === null || typeof value !== "object") {
+    return result;
   }
 
   if (Array.isArray(value)) {
-    const results: unknown[][] = [value];
-
-    for (const item of value.slice(0, 5)) {
-      results.push(...findArrays(item, depth + 1));
-    }
-
-    return results;
-  }
-
-  const results: unknown[][] = [];
-
-  for (const item of Object.values(
-    value as Record<string, unknown>
-  )) {
-    results.push(...findArrays(item, depth + 1));
-  }
-
-  return results;
-}
-
-function getObjectKeys(value: unknown): string[] {
-  if (value === null || typeof value !== "object") {
-    return [];
-  }
-
-  if (Array.isArray(value)) {
-    const first = value.find(
-      (item) => item !== null && typeof item === "object"
+    const firstObject = value.find(
+      (item) =>
+        item !== null &&
+        typeof item === "object" &&
+        !Array.isArray(item)
     );
 
-    return first && typeof first === "object"
-      ? Object.keys(first)
-      : [];
+    result.push({
+      path,
+      length: value.length,
+      firstRecordKeys:
+        firstObject && typeof firstObject === "object"
+          ? Object.keys(firstObject)
+          : [],
+    });
+
+    value.slice(0, 3).forEach((item, index) => {
+      inspectStructure(
+        item,
+        `${path}[${index}]`,
+        depth + 1,
+        result
+      );
+    });
+
+    return result;
   }
 
-  return Object.keys(value as Record<string, unknown>);
+  for (const [key, item] of Object.entries(
+    value as Record<string, unknown>
+  )) {
+    inspectStructure(
+      item,
+      `${path}.${key}`,
+      depth + 1,
+      result
+    );
+  }
+
+  return result;
+}
+
+function safePreview(payload: unknown) {
+  try {
+    return JSON.stringify(payload).slice(0, 3000);
+  } catch {
+    return "Preview unavailable";
+  }
 }
 
 async function fetchNseSchedule() {
@@ -172,21 +189,20 @@ async function fetchNseSchedule() {
     throw new Error("NSE API returned invalid JSON.");
   }
 
-  const arrays = findArrays(payload);
+  const arrays = inspectStructure(payload);
 
   const candidate = arrays
-    .filter((items) => items.length > 0)
+    .filter((item) => item.length > 0)
     .sort((a, b) => b.length - a.length)[0];
-
-  if (!candidate) {
-    throw new Error(
-      "NSE response received, but no data array was found."
-    );
-  }
 
   return {
     payload,
+    arrays,
     candidate,
+    apiStatus: apiResponse.status,
+    apiFinalUrl: apiResponse.url,
+    contentType,
+    pageFinalUrl: pageResponse.url,
   };
 }
 
@@ -223,18 +239,72 @@ async function authorizeOwner(request?: NextRequest) {
 async function runReadOnlyTest() {
   const result = await fetchNseSchedule();
 
+  const responseKeys =
+    result.payload !== null &&
+    typeof result.payload === "object" &&
+    !Array.isArray(result.payload)
+      ? Object.keys(result.payload as Record<string, unknown>)
+      : [];
+
+  if (!result.candidate) {
+    return {
+      success: false,
+      source: "NSE Official Upcoming IPO Schedule",
+      mode: "READ_ONLY_DIAGNOSTIC",
+      error: "No non-empty data array found in NSE response.",
+      apiStatus: result.apiStatus,
+      apiFinalUrl: result.apiFinalUrl,
+      pageFinalUrl: result.pageFinalUrl,
+      contentType: result.contentType,
+      payloadType: Array.isArray(result.payload)
+        ? "array"
+        : typeof result.payload,
+      responseKeys,
+      arrayStructure: result.arrays,
+      payloadPreview: safePreview(result.payload),
+      databaseWrites: 0,
+    };
+  }
+
+  const candidateArray = (() => {
+    let current: unknown = result.payload;
+
+    for (const part of result.candidate!.path
+      .replace(/^\$\.?/, "")
+      .split(".")) {
+      if (!part) continue;
+
+      const match = part.match(/^(.+)\[(\d+)\]$/);
+
+      if (match) {
+        current =
+          (current as Record<string, unknown>)[match[1]];
+        current = (current as unknown[])[Number(match[2])];
+      } else {
+        current = (current as Record<string, unknown>)[part];
+      }
+    }
+
+    return current;
+  })();
+
+  const records = Array.isArray(candidateArray)
+    ? candidateArray
+    : [];
+
   return {
     success: true,
     source: "NSE Official Upcoming IPO Schedule",
-    mode: "READ_ONLY_TEST",
-    detected: result.candidate.length,
-    responseKeys: getObjectKeys(result.payload),
-    recordKeys: getObjectKeys(result.candidate),
-    preview: result.candidate.slice(0, 10),
+    mode: "READ_ONLY_DIAGNOSTIC",
+    detected: records.length,
+    apiStatus: result.apiStatus,
+    apiFinalUrl: result.apiFinalUrl,
+    contentType: result.contentType,
+    responseKeys,
+    arrayStructure: result.arrays,
+    recordKeys: result.candidate.firstRecordKeys,
+    preview: records.slice(0, 5),
     databaseWrites: 0,
-    automaticPublication: 0,
-    message:
-      "NSE schedule data fetched successfully. No database records were changed.",
   };
 }
 
@@ -256,7 +326,7 @@ export async function POST(request: NextRequest) {
       {
         success: false,
         source: "NSE Official Upcoming IPO Schedule",
-        mode: "READ_ONLY_TEST",
+        mode: "READ_ONLY_DIAGNOSTIC",
         ...details,
         databaseWrites: 0,
       },
@@ -283,7 +353,7 @@ export async function GET() {
       {
         success: false,
         source: "NSE Official Upcoming IPO Schedule",
-        mode: "READ_ONLY_TEST",
+        mode: "READ_ONLY_DIAGNOSTIC",
         ...details,
         databaseWrites: 0,
       },

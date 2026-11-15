@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
@@ -26,6 +25,19 @@ type GMP = {
   updated_at: string;
 };
 
+type Subscription = {
+  id: string;
+  ipo_id: string;
+  subscription_date: string;
+  qib_subscription: number | string | null;
+  nii_subscription: number | string | null;
+  retail_subscription: number | string | null;
+  total_subscription: number | string | null;
+  source_name: string | null;
+  source_url: string | null;
+  updated_at: string;
+};
+
 function formatDate(date: string | null) {
   if (!date) return "Not Available";
 
@@ -40,7 +52,9 @@ function formatDate(date: string | null) {
   });
 }
 
-function formatDateTime(date: string) {
+function formatDateTime(date: string | null) {
+  if (!date) return "Not Available";
+
   const parsed = new Date(date);
 
   if (Number.isNaN(parsed.getTime())) return "Not Available";
@@ -52,6 +66,18 @@ function formatDateTime(date: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatSubscription(value: number | string | null) {
+  if (value === null || value === undefined || value === "") {
+    return "Not Available";
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) return "Not Available";
+
+  return `${parsed.toFixed(2)}x`;
 }
 
 function SectionTitle({
@@ -141,9 +167,11 @@ export default function IPOPage() {
 
   const [ipo, setIpo] = useState<IPO | null>(null);
   const [gmpHistory, setGmpHistory] = useState<GMP[]>([]);
+  const [subscriptionHistory, setSubscriptionHistory] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [gmpError, setGmpError] = useState("");
+  const [subscriptionError, setSubscriptionError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -179,6 +207,25 @@ export default function IPOPage() {
           if (active) setGmpError(historyError.message);
         } else if (active) {
           setGmpHistory((gmpData || []) as GMP[]);
+        }
+
+        const { data: subscriptionData, error: subscriptionFetchError } =
+          await supabase
+            .from("ipo_subscription")
+            .select(
+              "id, ipo_id, subscription_date, qib_subscription, nii_subscription, retail_subscription, total_subscription, source_name, source_url, updated_at"
+            )
+            .eq("ipo_id", id)
+            .order("subscription_date", { ascending: false });
+
+        if (subscriptionFetchError) {
+          if (active) {
+            setSubscriptionError(subscriptionFetchError.message);
+          }
+        } else if (active) {
+          setSubscriptionHistory(
+            (subscriptionData || []) as Subscription[]
+          );
         }
       } catch (err) {
         if (active) {
@@ -250,15 +297,9 @@ export default function IPOPage() {
   ];
 
   const latestGmp = gmpHistory[0];
+  const latestSubscription = subscriptionHistory[0];
 
   const researchSections = [
-    {
-      number: "02",
-      title: "Subscription Details",
-      subtitle: "Investor Demand",
-      description:
-        "Verified QIB, NII and Retail subscription information.",
-    },
     {
       number: "03",
       title: "Company Profile",
@@ -364,10 +405,7 @@ export default function IPOPage() {
               label="Company Name"
               value={ipo.company_name || "Not Available"}
             />
-            <InfoCard
-              label="Current Status"
-              value={status}
-            />
+            <InfoCard label="Current Status" value={status} />
             <InfoCard
               label="Price Band"
               value={ipo.price_band || "Not Available"}
@@ -446,10 +484,7 @@ export default function IPOPage() {
                   </thead>
                   <tbody>
                     {gmpHistory.map((item) => (
-                      <tr
-                        key={item.id}
-                        className="border-t border-white/10"
-                      >
+                      <tr key={item.id} className="border-t border-white/10">
                         <td className="px-5 py-4 font-bold text-emerald-300">
                           {item.gmp !== null
                             ? `₹${item.gmp}`
@@ -475,6 +510,124 @@ export default function IPOPage() {
           </p>
         </section>
 
+        {/* SUBSCRIPTION HISTORY */}
+        <section className="mt-10">
+          <SectionTitle
+            eyebrow="Investor Demand"
+            title="IPO Subscription Details"
+            description="Day-wise QIB, NII, Retail and total subscription figures from available records."
+          />
+
+          <div className="mt-7 overflow-hidden rounded-3xl border border-white/10 bg-[#101a2b]">
+            {subscriptionError ? (
+              <div className="p-8 text-center">
+                <p className="font-bold text-amber-300">
+                  Subscription Data Could Not Be Loaded
+                </p>
+                <p className="mt-2 break-words text-sm text-slate-400">
+                  {subscriptionError}
+                </p>
+              </div>
+            ) : subscriptionHistory.length === 0 ? (
+              <div className="p-8 text-center sm:p-10">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-2xl">
+                  —
+                </div>
+                <h3 className="mt-5 text-lg font-bold text-white">
+                  Subscription Data Not Available
+                </h3>
+                <p className="mx-auto mt-2 max-w-lg text-sm leading-7 text-slate-400">
+                  No verified subscription records have been added for this IPO yet.
+                  Day-wise subscription figures will appear here when available.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-4 border-b border-white/10 p-5 sm:grid-cols-4">
+                  <InfoCard
+                    label="Latest Subscription"
+                    value={formatSubscription(latestSubscription.total_subscription)}
+                  />
+                  <InfoCard
+                    label="QIB"
+                    value={formatSubscription(latestSubscription.qib_subscription)}
+                  />
+                  <InfoCard
+                    label="NII"
+                    value={formatSubscription(latestSubscription.nii_subscription)}
+                  />
+                  <InfoCard
+                    label="Retail"
+                    value={formatSubscription(latestSubscription.retail_subscription)}
+                  />
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[760px] text-left text-sm">
+                    <thead className="bg-white/[0.03] text-xs uppercase tracking-wider text-slate-500">
+                      <tr>
+                        <th className="px-5 py-4">Date</th>
+                        <th className="px-5 py-4">QIB</th>
+                        <th className="px-5 py-4">NII</th>
+                        <th className="px-5 py-4">Retail</th>
+                        <th className="px-5 py-4">Total</th>
+                        <th className="px-5 py-4">Source</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {subscriptionHistory.map((item) => (
+                        <tr key={item.id} className="border-t border-white/10">
+                          <td className="whitespace-nowrap px-5 py-4 font-semibold text-white">
+                            {formatDate(item.subscription_date)}
+                          </td>
+                          <td className="px-5 py-4 text-slate-300">
+                            {formatSubscription(item.qib_subscription)}
+                          </td>
+                          <td className="px-5 py-4 text-slate-300">
+                            {formatSubscription(item.nii_subscription)}
+                          </td>
+                          <td className="px-5 py-4 text-slate-300">
+                            {formatSubscription(item.retail_subscription)}
+                          </td>
+                          <td className="px-5 py-4 font-bold text-emerald-300">
+                            {formatSubscription(item.total_subscription)}
+                          </td>
+                          <td className="px-5 py-4 text-slate-300">
+                            {item.source_url ? (
+                              <a
+                                href={item.source_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-semibold text-emerald-400 hover:text-emerald-300"
+                              >
+                                {item.source_name || "View Source"}
+                              </a>
+                            ) : (
+                              item.source_name || "Not Available"
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="border-t border-white/10 px-5 py-4">
+                  <p className="text-xs text-slate-500">
+                    {subscriptionHistory.length} subscription record(s) available.
+                    Latest record update: {formatDateTime(latestSubscription.updated_at)}.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+
+          <p className="mt-3 text-xs leading-6 text-slate-500">
+            Subscription figures are shown as reported by their respective sources.
+            Figures may change during the IPO bidding period.
+          </p>
+        </section>
+
         {/* IMPORTANT DATES */}
         <section className="mt-10">
           <SectionTitle
@@ -484,18 +637,9 @@ export default function IPOPage() {
           />
 
           <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <InfoCard
-              label="Opening Date"
-              value={formatDate(ipo.open_date)}
-            />
-            <InfoCard
-              label="Closing Date"
-              value={formatDate(ipo.close_date)}
-            />
-            <InfoCard
-              label="Listing Date"
-              value={formatDate(ipo.listing_date)}
-            />
+            <InfoCard label="Opening Date" value={formatDate(ipo.open_date)} />
+            <InfoCard label="Closing Date" value={formatDate(ipo.close_date)} />
+            <InfoCard label="Listing Date" value={formatDate(ipo.listing_date)} />
           </div>
         </section>
 
@@ -509,10 +653,7 @@ export default function IPOPage() {
 
           <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {researchSections.map((section) => (
-              <ComingSoonCard
-                key={section.number}
-                {...section}
-              />
+              <ComingSoonCard key={section.number} {...section} />
             ))}
           </div>
         </section>

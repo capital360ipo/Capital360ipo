@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -14,6 +13,7 @@ type IPO = {
   close_date: string | null;
   listing_date: string | null;
   status: string | null;
+  publication_status?: string | null;
   ipo_type?: string | null;
   registrar_name?: string | null;
   registrar_url?: string | null;
@@ -80,8 +80,6 @@ function getCategory(ipo: IPO, today: string): Category {
     return "upcoming";
   }
 
-  // Closing date निकलने के बाद भी listing नहीं हुई,
-  // तो IPO Current में ही रहेगा।
   if (
     (ipo.open_date && ipo.open_date <= today) ||
     (ipo.close_date && ipo.close_date <= today) ||
@@ -157,7 +155,6 @@ function IPOCard({
     }
   }
 
-  // Apply Now तभी सक्रिय होगा जब IPO की आवेदन अवधि चालू हो।
   const isApplicationOpen = Boolean(
     ipo.open_date &&
       ipo.close_date &&
@@ -248,7 +245,6 @@ function IPOCard({
         </Link>
       </div>
 
-      {/* IPO ACTION BUTTONS */}
       <div className="mt-4 grid grid-cols-2 gap-3">
         {canApply && applyUrl ? (
           <a
@@ -318,6 +314,7 @@ export default function Home() {
         const { data, error: ipoError } = await supabase
           .from("ipo_master")
           .select("*")
+          .eq("publication_status", "published")
           .order("open_date", { ascending: true, nullsFirst: false });
 
         if (ipoError) throw ipoError;
@@ -424,8 +421,6 @@ export default function Home() {
       <SiteHeader />
 
       <div className="mx-auto max-w-7xl px-4 py-7 sm:px-6 sm:py-10 lg:px-8">
-
-        {/* PAGE INTRO */}
         <section className="flex flex-col justify-between gap-5 border-b border-white/10 pb-7 sm:flex-row sm:items-end">
           <div>
             <p className="text-xs font-bold tracking-[0.2em] text-emerald-400">
@@ -449,7 +444,6 @@ export default function Home() {
           </Link>
         </section>
 
-        {/* ORIGINAL MAINBOARD / SME TABS */}
         <section className="mt-7">
           <div className="grid grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-[#101a2b] p-2">
             <button
@@ -484,7 +478,6 @@ export default function Home() {
           </div>
         </section>
 
-        {/* SEARCH - ORIGINAL STYLE */}
         <section className="mt-5">
           <label htmlFor="ipo-search" className="sr-only">
             Search IPO company
@@ -506,7 +499,6 @@ export default function Home() {
           </div>
         </section>
 
-        {/* COMPACT IPO DROPDOWN */}
         {!loading && !error && (
           <section className="mt-5">
             <div className="relative inline-block">
@@ -547,7 +539,6 @@ export default function Home() {
           </section>
         )}
 
-        {/* LOADING / ERROR / SELECTED IPO SECTION */}
         {loading ? (
           <div className="flex min-h-64 flex-col items-center justify-center">
             <div className="h-9 w-9 animate-spin rounded-full border-4 border-slate-700 border-t-emerald-400" />
@@ -607,7 +598,6 @@ export default function Home() {
           </section>
         )}
 
-        {/* DISCLAIMER */}
         <section className="mt-12 rounded-2xl border border-amber-400/15 bg-amber-400/5 p-5">
           <p className="text-sm font-bold text-amber-300">
             Important Information
@@ -619,7 +609,6 @@ export default function Home() {
           </p>
         </section>
 
-        {/* FOOTER */}
         <footer className="mt-10 border-t border-white/10 py-7 text-center">
           <Link href="/" className="text-lg font-black">
             CAPITAL<span className="text-emerald-400">360</span>IPO

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import SiteHeader from "@/components/SiteHeader";
 import IPOResearchSections from "@/components/IPOResearchSections";
+import IPOAdditionalSections from "@/components/IPOAdditionalSections";
 
 type IPO = {
   id: string;
@@ -14,6 +15,9 @@ type IPO = {
   open_date: string | null;
   close_date: string | null;
   listing_date: string | null;
+  allotment_date: string | null;
+  refund_date: string | null;
+  share_credit_date: string | null;
   status: string | null;
   created_at: string | null;
 };
@@ -226,43 +230,6 @@ function ProfileItem({
   );
 }
 
-function ComingSoonCard({
-  number,
-  title,
-  subtitle,
-  description,
-}: {
-  number: string;
-  title: string;
-  subtitle: string;
-  description: string;
-}) {
-  return (
-    <article className="rounded-2xl border border-white/10 bg-[#101a2b] p-5 transition hover:-translate-y-1 hover:border-emerald-400/30">
-      <div className="flex items-center justify-between">
-        <span className="text-2xl font-black text-emerald-400/60">
-          {number}
-        </span>
-        <span className="rounded-full border border-white/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-          Data Pending
-        </span>
-      </div>
-      <h3 className="mt-5 text-base font-bold text-white">{title}</h3>
-      <p className="mt-2 text-xs font-semibold text-emerald-400">
-        {subtitle}
-      </p>
-      <p className="mt-4 text-sm leading-6 text-slate-400">
-        {description}
-      </p>
-      <div className="mt-5 border-t border-white/10 pt-4">
-        <p className="text-xs font-semibold text-slate-500">
-          Information will appear when verified data is available.
-        </p>
-      </div>
-    </article>
-  );
-}
-
 export default function IPOPage() {
   const params = useParams();
   const id = params.id as string;
@@ -469,21 +436,6 @@ export default function IPOPage() {
       getFinancialNumber(item.total_assets),
     ])
   );
-
-  const researchSections = [
-    {
-      number: "05",
-      title: "Allotment & Listing",
-      subtitle: "IPO Timeline",
-      description: "Allotment, refund, demat credit and listing information.",
-    },
-    {
-      number: "06",
-      title: "Frequently Asked Questions",
-      subtitle: "IPO FAQs",
-      description: "Important questions and verified answers about this IPO.",
-    },
-  ];
 
   const documentTypes = [
     "DRHP",
@@ -1216,23 +1168,23 @@ export default function IPOPage() {
           <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <InfoCard label="Opening Date" value={formatDate(ipo.open_date)} />
             <InfoCard label="Closing Date" value={formatDate(ipo.close_date)} />
+            <InfoCard label="Allotment Date" value={formatDate(ipo.allotment_date)} />
+            <InfoCard label="Refund Date" value={formatDate(ipo.refund_date)} />
+            <InfoCard label="Demat Credit Date" value={formatDate(ipo.share_credit_date)} />
             <InfoCard label="Listing Date" value={formatDate(ipo.listing_date)} />
           </div>
         </section>
 
-        {/* OTHER RESEARCH SECTIONS */}
-        <section className="mt-12">
-          <SectionTitle
-            eyebrow="Research & Intelligence"
-            title="Complete IPO Analysis"
-            description="Additional IPO research sections. Verified information will be displayed as the relevant data becomes available."
-          />
-          <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {researchSections.map((section) => (
-              <ComingSoonCard key={section.number} {...section} />
-            ))}
-          </div>
-        </section>
+        {/* ALLOTMENT, LISTING & FAQs */}
+        <IPOAdditionalSections
+          companyName={ipo.company_name}
+          openDate={ipo.open_date}
+          closeDate={ipo.close_date}
+          allotmentDate={ipo.allotment_date}
+          refundDate={ipo.refund_date}
+          shareCreditDate={ipo.share_credit_date}
+          listingDate={ipo.listing_date}
+        />
 
         {/* DISCLAIMER */}
         <section className="mt-10 rounded-2xl border border-amber-400/20 bg-amber-400/5 p-5 sm:p-6">

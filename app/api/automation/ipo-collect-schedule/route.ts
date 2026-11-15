@@ -43,7 +43,11 @@ function getErrorDetails(error: unknown) {
 }
 
 function findArrays(value: unknown, depth = 0): unknown[][] {
-  if (depth > 8 || value === null || typeof value !== "object") {
+  if (
+    depth > 8 ||
+    value === null ||
+    typeof value !== "object"
+  ) {
     return [];
   }
 
@@ -59,7 +63,9 @@ function findArrays(value: unknown, depth = 0): unknown[][] {
 
   const results: unknown[][] = [];
 
-  for (const item of Object.values(value as Record<string, unknown>)) {
+  for (const item of Object.values(
+    value as Record<string, unknown>
+  )) {
     results.push(...findArrays(item, depth + 1));
   }
 
@@ -67,7 +73,9 @@ function findArrays(value: unknown, depth = 0): unknown[][] {
 }
 
 function getObjectKeys(value: unknown): string[] {
-  if (value === null || typeof value !== "object") return [];
+  if (value === null || typeof value !== "object") {
+    return [];
+  }
 
   if (Array.isArray(value)) {
     const first = value.find(
@@ -89,12 +97,15 @@ async function fetchNseSchedule() {
     pageResponse = await fetch(NSE_PAGE, {
       method: "GET",
       cache: "no-store",
+      redirect: "follow",
       signal: AbortSignal.timeout(20000),
       headers: HEADERS,
     });
   } catch (error) {
+    const details = getErrorDetails(error);
+
     throw new Error(
-      `NSE_PAGE_CONNECTION_FAILED: ${getErrorDetails(error).error}; ${getErrorDetails(error).cause ?? ""}`
+      `NSE_PAGE_CONNECTION_FAILED: ${details.error}; ${details.cause ?? ""}`
     );
   }
 
@@ -123,7 +134,7 @@ async function fetchNseSchedule() {
     apiResponse = await fetch(NSE_API, {
       method: "GET",
       cache: "no-store",
-      redirect: "error",
+      redirect: "follow",
       signal: AbortSignal.timeout(25000),
       headers: {
         ...HEADERS,
@@ -131,14 +142,25 @@ async function fetchNseSchedule() {
       },
     });
   } catch (error) {
+    const details = getErrorDetails(error);
+
     throw new Error(
-      `NSE_API_CONNECTION_FAILED: ${getErrorDetails(error).error}; ${getErrorDetails(error).cause ?? ""}`
+      `NSE_API_CONNECTION_FAILED: ${details.error}; ${details.cause ?? ""}`
     );
   }
 
   if (!apiResponse.ok) {
     throw new Error(
       `NSE schedule API returned HTTP ${apiResponse.status}`
+    );
+  }
+
+  const contentType =
+    apiResponse.headers.get("content-type") || "";
+
+  if (!contentType.toLowerCase().includes("json")) {
+    throw new Error(
+      `NSE API returned non-JSON response. Content-Type: ${contentType}`
     );
   }
 
@@ -176,7 +198,10 @@ async function authorizeOwner(request?: NextRequest) {
       return {
         authorized: false as const,
         response: jsonResponse(
-          { success: false, error: "Invalid request origin." },
+          {
+            success: false,
+            error: "Invalid request origin.",
+          },
           403
         ),
       };

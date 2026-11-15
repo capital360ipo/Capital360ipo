@@ -14,33 +14,12 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-async function authorize(request: NextRequest) {
-  const origin = request.headers.get("origin");
-
-  if (!origin || origin !== request.nextUrl.origin) {
-    return {
-      authorized: false as const,
-      response: jsonResponse(
-        { success: false, error: "Invalid request origin." },
-        403
-      ),
-    };
-  }
-
-  const auth = await requireApiRole(["owner", "admin"]);
-
-  if (!auth.authorized) {
-    return {
-      authorized: false as const,
-      response: auth.response,
-    };
-  }
-
-  return { authorized: true as const };
+async function checkRole() {
+  return requireApiRole(["owner", "admin"]);
 }
 
-export async function GET(request: NextRequest) {
-  const auth = await authorize(request);
+export async function GET() {
+  const auth = await checkRole();
 
   if (!auth.authorized) {
     return auth.response;
@@ -81,7 +60,16 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const auth = await authorize(request);
+  const origin = request.headers.get("origin");
+
+  if (!origin || origin !== request.nextUrl.origin) {
+    return jsonResponse({
+      success: false,
+      error: "Invalid request origin.",
+    }, 403);
+  }
+
+  const auth = await checkRole();
 
   if (!auth.authorized) {
     return auth.response;
@@ -110,7 +98,6 @@ export async function POST(request: NextRequest) {
         mode: "PENDING_QUEUE_SYNC",
         detected: 0,
         inserted: 0,
-        message: "No IPO records require link enrichment.",
         databaseModified: false,
       });
     }
@@ -120,8 +107,8 @@ export async function POST(request: NextRequest) {
       registrar_name: ipo.registrar_name,
       registrar_url: ipo.registrar_url,
       apply_url: ipo.apply_url,
-      verification_status: "pending" as const,
-      approval_status: "pending" as const,
+      verification_status: "pending",
+      approval_status: "pending",
       source_name: "IPO Master queue discovery",
     }));
 
@@ -151,7 +138,7 @@ export async function POST(request: NextRequest) {
       automaticPublication: 0,
       databaseModified: inserted > 0,
       note:
-        "IPO records were added to the separate enrichment queue. Existing queue records were not overwritten. No links were verified, approved or published.",
+        "Queue records created without verifying, approving or publishing any links. Existing records were not overwritten.",
     });
   } catch (error) {
     console.error("IPO link enrichment POST error:", error);

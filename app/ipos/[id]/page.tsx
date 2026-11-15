@@ -71,6 +71,32 @@ type FinancialRecord = {
   updated_at: string;
 };
 
+type IPODocument = {
+  id: string;
+  ipo_id: string;
+  document_type: string;
+  title: string;
+  document_url: string;
+  source_name: string | null;
+  source_url: string | null;
+  filed_date: string | null;
+  is_verified: boolean;
+  verified_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function isSafeExternalUrl(value: string | null) {
+  if (!value) return false;
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
 function formatDate(date: string | null) {
   if (!date) return "Not Available";
 
@@ -245,6 +271,7 @@ export default function IPOPage() {
   const [subscriptionHistory, setSubscriptionHistory] = useState<Subscription[]>([]);
   const [companyProfile, setCompanyProfile] = useState<CompanyProfile | null>(null);
   const [financialHistory, setFinancialHistory] = useState<FinancialRecord[]>([]);
+  const [ipoDocuments, setIpoDocuments] = useState<IPODocument[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -252,6 +279,7 @@ export default function IPOPage() {
   const [subscriptionError, setSubscriptionError] = useState("");
   const [profileError, setProfileError] = useState("");
   const [financialError, setFinancialError] = useState("");
+  const [documentsError, setDocumentsError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -332,6 +360,23 @@ export default function IPOPage() {
           if (active) setFinancialError(financialFetchError.message);
         } else if (active) {
           setFinancialHistory((financialData || []) as FinancialRecord[]);
+        }
+
+        // Fetch only verified IPO documents for public display.
+        const { data: documentData, error: documentFetchError } =
+          await supabase
+            .from("ipo_documents")
+            .select(
+              "id, ipo_id, document_type, title, document_url, source_name, source_url, filed_date, is_verified, verified_at, created_at, updated_at"
+            )
+            .eq("ipo_id", id)
+            .eq("is_verified", true)
+            .order("filed_date", { ascending: false });
+
+        if (documentFetchError) {
+          if (active) setDocumentsError(documentFetchError.message);
+        } else if (active) {
+          setIpoDocuments((documentData || []) as IPODocument[]);
         }
       } catch (err) {
         if (active) {
@@ -440,16 +485,18 @@ export default function IPOPage() {
     },
     {
       number: "07",
-      title: "Official Documents",
-      subtitle: "SEBI & Exchange Filings",
-      description: "DRHP, RHP and other available official documents.",
-    },
-    {
-      number: "08",
       title: "Frequently Asked Questions",
       subtitle: "IPO FAQs",
       description: "Important questions and verified answers about this IPO.",
     },
+  ];
+
+  const documentTypes = [
+    "DRHP",
+    "RHP",
+    "Prospectus",
+    "Addendum",
+    "Other",
   ];
 
   return (
@@ -529,14 +576,14 @@ export default function IPOPage() {
                 </p>
               </div>
 
-              {companyProfile?.source_url && (
+              {isSafeExternalUrl(companyProfile?.source_url || null) && (
                 <a
-                  href={companyProfile.source_url}
+                  href={companyProfile!.source_url!}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="rounded-xl border border-emerald-400/40 px-4 py-2 text-sm font-bold text-emerald-300 transition hover:bg-emerald-400/10"
                 >
-                  {companyProfile.source_name || "View Official Source"} ↗
+                  {companyProfile?.source_name || "View Official Source"} ↗
                 </a>
               )}
             </div>
@@ -588,9 +635,9 @@ export default function IPOPage() {
                       <p className="text-xs font-bold uppercase tracking-wider text-emerald-400">
                         Official Website
                       </p>
-                      {companyProfile.website_url ? (
+                      {isSafeExternalUrl(companyProfile.website_url) ? (
                         <a
-                          href={companyProfile.website_url}
+                          href={companyProfile.website_url!}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="mt-2 inline-block break-all text-sm font-semibold text-emerald-300 hover:underline"
@@ -760,9 +807,9 @@ export default function IPOPage() {
                           <td className="px-5 py-4 text-slate-300">{formatSubscription(item.retail_subscription)}</td>
                           <td className="px-5 py-4 font-bold text-emerald-300">{formatSubscription(item.total_subscription)}</td>
                           <td className="px-5 py-4 text-slate-300">
-                            {item.source_url ? (
+                            {isSafeExternalUrl(item.source_url) ? (
                               <a
-                                href={item.source_url}
+                                href={item.source_url!}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="font-semibold text-emerald-400 hover:text-emerald-300"
@@ -970,9 +1017,9 @@ export default function IPOPage() {
                   <p className="text-xs text-slate-500">
                     {financialHistory.length} verified financial year record(s) available.
                   </p>
-                  {latestFinancial.source_url && (
+                  {isSafeExternalUrl(latestFinancial.source_url) && (
                     <a
-                      href={latestFinancial.source_url}
+                      href={latestFinancial.source_url!}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="mt-3 inline-block text-sm font-semibold text-emerald-300 hover:underline"
@@ -993,6 +1040,172 @@ export default function IPOPage() {
           <p className="mt-3 text-xs leading-6 text-slate-500">
             Financial figures are presented in ₹ Crore and are subject to verification
             against official company filings, DRHP, RHP and audited financial statements.
+          </p>
+        </section>
+
+        {/* IPO DOCUMENTS */}
+        <section className="mt-12" id="ipo-documents">
+          <SectionTitle
+            eyebrow="Official Filings"
+            title="IPO Documents"
+            description="Access official IPO offer documents and regulatory filings, including DRHP, RHP and Prospectus."
+          />
+
+          <div className="mt-7 overflow-hidden rounded-3xl border border-emerald-400/20 bg-gradient-to-br from-[#101f30] to-[#0c1727] p-5 shadow-xl sm:p-8">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-5">
+              <div>
+                <h3 className="text-xl font-black text-white">
+                  Official Document Library
+                </h3>
+                <p className="mt-1 text-sm text-slate-400">
+                  {ipo.company_name}
+                </p>
+              </div>
+
+              <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-300">
+                Verified Documents Only
+              </span>
+            </div>
+
+            {documentsError ? (
+              <div className="py-10 text-center">
+                <h3 className="font-bold text-amber-300">
+                  Documents Could Not Be Loaded
+                </h3>
+                <p className="mt-2 break-words text-sm text-slate-400">
+                  {documentsError}
+                </p>
+              </div>
+            ) : ipoDocuments.length === 0 ? (
+              <div className="py-12 text-center">
+                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-3xl">
+                  📄
+                </div>
+                <h3 className="mt-5 text-lg font-bold text-white">
+                  IPO Documents Not Available
+                </h3>
+                <p className="mx-auto mt-2 max-w-xl text-sm leading-7 text-slate-400">
+                  Official documents have not been added or verified for this IPO yet.
+                  Documents will appear here after verification from official sources.
+                </p>
+                <span className="mt-5 inline-flex rounded-full border border-amber-400/20 bg-amber-400/10 px-4 py-2 text-xs font-bold text-amber-300">
+                  Documents Pending Verification
+                </span>
+              </div>
+            ) : (
+              <>
+                <div className="grid gap-4 pt-6 sm:grid-cols-2 lg:grid-cols-3">
+                  {documentTypes.map((type) => {
+                    const count = ipoDocuments.filter(
+                      (doc) => doc.document_type === type
+                    ).length;
+
+                    return (
+                      <div
+                        key={type}
+                        className="rounded-2xl border border-white/10 bg-white/[0.03] p-4"
+                      >
+                        <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                          {type}
+                        </p>
+                        <p className="mt-2 text-2xl font-black text-emerald-300">
+                          {count}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Verified document(s)
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-7 space-y-4">
+                  {ipoDocuments.map((doc) => (
+                    <article
+                      key={doc.id}
+                      className="rounded-2xl border border-white/10 bg-[#0a1422]/70 p-5 transition hover:border-emerald-400/30"
+                    >
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex min-w-0 items-start gap-4">
+                          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-emerald-400/20 bg-emerald-400/10 text-xl">
+                            📄
+                          </div>
+
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+                                {doc.document_type}
+                              </span>
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+                                ✓ Verified
+                              </span>
+                            </div>
+
+                            <h4 className="mt-3 break-words text-base font-bold text-white">
+                              {doc.title}
+                            </h4>
+
+                            <p className="mt-2 text-xs text-slate-400">
+                              Filing Date: {formatDate(doc.filed_date)}
+                            </p>
+
+                            <p className="mt-1 text-xs text-slate-500">
+                              Source: {doc.source_name || "Official filing"}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          {isSafeExternalUrl(doc.document_url) ? (
+                            <a
+                              href={doc.document_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center rounded-xl bg-emerald-400 px-5 py-3 text-sm font-bold text-slate-950 transition hover:bg-emerald-300"
+                            >
+                              View Document ↗
+                            </a>
+                          ) : (
+                            <span className="rounded-xl border border-amber-400/20 px-4 py-3 text-xs font-semibold text-amber-300">
+                              Document Link Unavailable
+                            </span>
+                          )}
+
+                          {isSafeExternalUrl(doc.source_url) && (
+                            <a
+                              href={doc.source_url!}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 transition hover:border-emerald-400/40 hover:text-emerald-300"
+                            >
+                              Source ↗
+                            </a>
+                          )}
+                        </div>
+                      </div>
+
+                      {doc.verified_at && (
+                        <p className="mt-4 border-t border-white/10 pt-3 text-[11px] text-slate-500">
+                          Verified on: {formatDateTime(doc.verified_at)}
+                        </p>
+                      )}
+                    </article>
+                  ))}
+                </div>
+
+                <div className="mt-6 border-t border-white/10 pt-4">
+                  <p className="text-xs leading-6 text-slate-500">
+                    {ipoDocuments.length} verified document(s) available.
+                    Always check the issuer and regulatory source before relying on a filing.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+
+          <p className="mt-3 text-xs leading-6 text-slate-500">
+            Documents are provided for informational purposes. Capital360IPO
+            does not modify official regulatory filings.
           </p>
         </section>
 

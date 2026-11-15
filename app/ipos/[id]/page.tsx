@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import SiteHeader from "@/components/SiteHeader";
+import IPOResearchSections from "@/components/IPOResearchSections";
 
 type IPO = {
   id: string;
@@ -362,7 +363,6 @@ export default function IPOPage() {
           setFinancialHistory((financialData || []) as FinancialRecord[]);
         }
 
-        // Fetch only verified IPO documents for public display.
         const { data: documentData, error: documentFetchError } =
           await supabase
             .from("ipo_documents")
@@ -473,18 +473,12 @@ export default function IPOPage() {
   const researchSections = [
     {
       number: "05",
-      title: "Promoters & Risks",
-      subtitle: "Management & Risk Factors",
-      description: "Promoter details, management information and disclosed risks.",
-    },
-    {
-      number: "06",
       title: "Allotment & Listing",
       subtitle: "IPO Timeline",
       description: "Allotment, refund, demat credit and listing information.",
     },
     {
-      number: "07",
+      number: "06",
       title: "Frequently Asked Questions",
       subtitle: "IPO FAQs",
       description: "Important questions and verified answers about this IPO.",
@@ -1208,6 +1202,9 @@ export default function IPOPage() {
             does not modify official regulatory filings.
           </p>
         </section>
+
+        {/* PROMOTERS & RISK ANALYSIS */}
+        <IPOResearchSections ipoId={ipo.id} />
 
         {/* IMPORTANT DATES */}
         <section className="mt-10">

@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -14,6 +15,9 @@ type IPO = {
   listing_date: string | null;
   status: string | null;
   ipo_type?: string | null;
+  registrar_name?: string | null;
+  registrar_url?: string | null;
+  apply_url?: string | null;
 };
 
 type GMP = {
@@ -45,6 +49,22 @@ function formatDate(date: string | null) {
     month: "short",
     year: "numeric",
   });
+}
+
+function safeExternalUrl(value: string | null | undefined) {
+  if (!value) return null;
+
+  try {
+    const url = new URL(value.trim());
+
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return null;
+    }
+
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 function getCategory(ipo: IPO, today: string): Category {
@@ -137,6 +157,21 @@ function IPOCard({
     }
   }
 
+  // Apply Now तभी सक्रिय होगा जब IPO की आवेदन अवधि चालू हो।
+  const isApplicationOpen = Boolean(
+    ipo.open_date &&
+      ipo.close_date &&
+      ipo.open_date <= today &&
+      ipo.close_date >= today &&
+      !status.includes("cancel")
+  );
+
+  const applyUrl = safeExternalUrl(ipo.apply_url);
+  const registrarUrl = safeExternalUrl(ipo.registrar_url);
+
+  const canApply = isApplicationOpen && Boolean(applyUrl);
+  const canCheckAllotment = Boolean(registrarUrl);
+
   return (
     <article className="group rounded-2xl border border-white/10 bg-[#111a2b] p-5 transition duration-300 hover:-translate-y-1 hover:border-emerald-400/40 hover:bg-[#142238] sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -211,6 +246,56 @@ function IPOCard({
         >
           View Details →
         </Link>
+      </div>
+
+      {/* IPO ACTION BUTTONS */}
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        {canApply && applyUrl ? (
+          <a
+            href={applyUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex min-h-10 items-center justify-center rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-300 transition hover:border-emerald-400/60 hover:bg-emerald-400/20"
+          >
+            Apply Now ↗
+          </a>
+        ) : (
+          <span
+            aria-disabled="true"
+            title={
+              !isApplicationOpen
+                ? "IPO application window is not open"
+                : "Official application link is not available yet"
+            }
+            className="flex min-h-10 cursor-not-allowed items-center justify-center rounded-lg border border-emerald-400/10 bg-emerald-400/5 px-3 py-2 text-xs font-semibold text-emerald-300/40"
+          >
+            Apply Now
+          </span>
+        )}
+
+        {canCheckAllotment && registrarUrl ? (
+          <a
+            href={registrarUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={
+              ipo.registrar_name
+                ? `Allotment status by ${ipo.registrar_name}`
+                : "Open official IPO Registrar"
+            }
+            className="flex min-h-10 items-center justify-center rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-bold text-slate-300 transition hover:border-white/25 hover:bg-white/10 hover:text-white"
+          >
+            Allotment ↗
+          </a>
+        ) : (
+          <span
+            aria-disabled="true"
+            title="Official Registrar link is not available yet"
+            className="flex min-h-10 cursor-not-allowed items-center justify-center rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs font-semibold text-slate-500"
+          >
+            Allotment
+          </span>
+        )}
       </div>
     </article>
   );

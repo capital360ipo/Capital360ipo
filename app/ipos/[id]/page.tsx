@@ -38,6 +38,22 @@ type Subscription = {
   updated_at: string;
 };
 
+type CompanyProfile = {
+  id: string;
+  ipo_id: string;
+  company_description: string | null;
+  industry: string | null;
+  sector: string | null;
+  business_model: string | null;
+  products_services: string | null;
+  headquarters: string | null;
+  website_url: string | null;
+  incorporation_year: number | null;
+  source_name: string | null;
+  source_url: string | null;
+  updated_at: string;
+};
+
 function formatDate(date: string | null) {
   if (!date) return "Not Available";
 
@@ -123,6 +139,25 @@ function InfoCard({
   );
 }
 
+function ProfileItem({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | null;
+}) {
+  return (
+    <div className="border-b border-white/[0.07] py-4 last:border-0">
+      <p className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+        {label}
+      </p>
+      <p className="mt-2 break-words text-sm leading-7 text-slate-200">
+        {value || "Not Available"}
+      </p>
+    </div>
+  );
+}
+
 function ComingSoonCard({
   number,
   title,
@@ -144,7 +179,6 @@ function ComingSoonCard({
           Data Pending
         </span>
       </div>
-
       <h3 className="mt-5 text-base font-bold text-white">{title}</h3>
       <p className="mt-2 text-xs font-semibold text-emerald-400">
         {subtitle}
@@ -168,10 +202,13 @@ export default function IPOPage() {
   const [ipo, setIpo] = useState<IPO | null>(null);
   const [gmpHistory, setGmpHistory] = useState<GMP[]>([]);
   const [subscriptionHistory, setSubscriptionHistory] = useState<Subscription[]>([]);
+  const [companyProfile, setCompanyProfile] = useState<CompanyProfile | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [gmpError, setGmpError] = useState("");
   const [subscriptionError, setSubscriptionError] = useState("");
+  const [profileError, setProfileError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -219,13 +256,23 @@ export default function IPOPage() {
             .order("subscription_date", { ascending: false });
 
         if (subscriptionFetchError) {
-          if (active) {
-            setSubscriptionError(subscriptionFetchError.message);
-          }
+          if (active) setSubscriptionError(subscriptionFetchError.message);
         } else if (active) {
-          setSubscriptionHistory(
-            (subscriptionData || []) as Subscription[]
-          );
+          setSubscriptionHistory((subscriptionData || []) as Subscription[]);
+        }
+
+        const { data: profileData, error: profileFetchError } = await supabase
+          .from("ipo_company_profile")
+          .select(
+            "id, ipo_id, company_description, industry, sector, business_model, products_services, headquarters, website_url, incorporation_year, source_name, source_url, updated_at"
+          )
+          .eq("ipo_id", id)
+          .maybeSingle();
+
+        if (profileFetchError) {
+          if (active) setProfileError(profileFetchError.message);
+        } else if (active) {
+          setCompanyProfile(profileData as CompanyProfile | null);
         }
       } catch (err) {
         if (active) {
@@ -288,6 +335,8 @@ export default function IPOPage() {
   }
 
   const status = ipo.status?.trim() || "IPO";
+  const latestGmp = gmpHistory[0];
+  const latestSubscription = subscriptionHistory[0];
 
   const keyDetails = [
     { label: "Price Band", value: ipo.price_band || "Not Available" },
@@ -296,51 +345,36 @@ export default function IPOPage() {
     { label: "Listing Date", value: formatDate(ipo.listing_date) },
   ];
 
-  const latestGmp = gmpHistory[0];
-  const latestSubscription = subscriptionHistory[0];
-
   const researchSections = [
-    {
-      number: "03",
-      title: "Company Profile",
-      subtitle: "Business Overview",
-      description:
-        "Business model, industry, products and company operations.",
-    },
     {
       number: "04",
       title: "Financial Performance",
       subtitle: "Financial Analysis",
-      description:
-        "Revenue, profit, assets and other verified financial information.",
+      description: "Revenue, profit, assets and other verified financial information.",
     },
     {
       number: "05",
       title: "Promoters & Risks",
       subtitle: "Management & Risk Factors",
-      description:
-        "Promoter details, management information and disclosed risks.",
+      description: "Promoter details, management information and disclosed risks.",
     },
     {
       number: "06",
       title: "Allotment & Listing",
       subtitle: "IPO Timeline",
-      description:
-        "Allotment, refund, demat credit and listing information.",
+      description: "Allotment, refund, demat credit and listing information.",
     },
     {
       number: "07",
       title: "Official Documents",
       subtitle: "SEBI & Exchange Filings",
-      description:
-        "DRHP, RHP and other available official documents.",
+      description: "DRHP, RHP and other available official documents.",
     },
     {
       number: "08",
       title: "Frequently Asked Questions",
       subtitle: "IPO FAQs",
-      description:
-        "Important questions and verified answers about this IPO.",
+      description: "Important questions and verified answers about this IPO.",
     },
   ];
 
@@ -360,7 +394,6 @@ export default function IPOPage() {
         {/* IPO HERO */}
         <section className="relative mt-6 overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-[#14243a] via-[#101c2e] to-[#0b1423] p-6 shadow-2xl sm:p-10">
           <div className="pointer-events-none absolute -right-20 -top-28 h-80 w-80 rounded-full bg-emerald-400/10 blur-3xl" />
-
           <div className="relative">
             <div className="flex flex-wrap items-center gap-3">
               <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-xs font-bold uppercase tracking-wider text-emerald-300">
@@ -382,11 +415,7 @@ export default function IPOPage() {
 
             <div className="mt-9 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {keyDetails.map((item) => (
-                <InfoCard
-                  key={item.label}
-                  label={item.label}
-                  value={item.value}
-                />
+                <InfoCard key={item.label} label={item.label} value={item.value} />
               ))}
             </div>
           </div>
@@ -399,21 +428,135 @@ export default function IPOPage() {
             title="About This IPO"
             description="Key information available in the Capital360IPO database."
           />
-
           <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <InfoCard
-              label="Company Name"
-              value={ipo.company_name || "Not Available"}
-            />
+            <InfoCard label="Company Name" value={ipo.company_name || "Not Available"} />
             <InfoCard label="Current Status" value={status} />
-            <InfoCard
-              label="Price Band"
-              value={ipo.price_band || "Not Available"}
-            />
-            <InfoCard
-              label="IPO Record Created"
-              value={formatDate(ipo.created_at)}
-            />
+            <InfoCard label="Price Band" value={ipo.price_band || "Not Available"} />
+            <InfoCard label="IPO Record Created" value={formatDate(ipo.created_at)} />
+          </div>
+        </section>
+
+        {/* COMPANY PROFILE */}
+        <section className="mt-10">
+          <SectionTitle
+            eyebrow="Company Research"
+            title="Company Profile"
+            description="Learn about the company behind this IPO through available company information and official sources."
+          />
+
+          <div className="mt-7 overflow-hidden rounded-3xl border border-emerald-400/30 bg-gradient-to-br from-[#101f30] to-[#0c1727] p-6 shadow-xl sm:p-8">
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-5">
+              <div>
+                <h3 className="text-xl font-black text-white">
+                  {ipo.company_name}
+                </h3>
+                <p className="mt-1 text-sm text-slate-400">
+                  Business Overview & Company Information
+                </p>
+              </div>
+
+              {companyProfile?.source_url && (
+                <a
+                  href={companyProfile.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-xl border border-emerald-400/40 px-4 py-2 text-sm font-bold text-emerald-300 transition hover:bg-emerald-400/10"
+                >
+                  {companyProfile.source_name || "View Official Source"} ↗
+                </a>
+              )}
+            </div>
+
+            {profileError ? (
+              <div className="py-8">
+                <p className="font-bold text-amber-300">
+                  Company Profile Could Not Be Loaded
+                </p>
+                <p className="mt-2 break-words text-sm text-slate-400">
+                  {profileError}
+                </p>
+              </div>
+            ) : !companyProfile ? (
+              <div className="py-10 text-center">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-2xl">
+                  —
+                </div>
+                <h3 className="mt-5 text-lg font-bold text-white">
+                  Company Information Not Available
+                </h3>
+                <p className="mx-auto mt-2 max-w-lg text-sm leading-7 text-slate-400">
+                  Verified company information has not been added for this IPO yet.
+                  The profile will appear here when information is available.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="grid gap-8 pt-5 md:grid-cols-2">
+                  <div>
+                    <ProfileItem
+                      label="Company Overview"
+                      value={companyProfile.company_description}
+                    />
+                    <ProfileItem
+                      label="Industry"
+                      value={companyProfile.industry}
+                    />
+                    <ProfileItem
+                      label="Sector"
+                      value={companyProfile.sector}
+                    />
+                    <ProfileItem
+                      label="Business Model"
+                      value={companyProfile.business_model}
+                    />
+                  </div>
+
+                  <div>
+                    <ProfileItem
+                      label="Products & Services"
+                      value={companyProfile.products_services}
+                    />
+                    <ProfileItem
+                      label="Headquarters"
+                      value={companyProfile.headquarters}
+                    />
+                    <ProfileItem
+                      label="Incorporation Year"
+                      value={
+                        companyProfile.incorporation_year
+                          ? String(companyProfile.incorporation_year)
+                          : null
+                      }
+                    />
+                    <div className="border-b border-white/[0.07] py-4">
+                      <p className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+                        Official Website
+                      </p>
+                      {companyProfile.website_url ? (
+                        <a
+                          href={companyProfile.website_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-2 inline-block break-all text-sm font-semibold text-emerald-300 hover:underline"
+                        >
+                          {companyProfile.website_url}
+                        </a>
+                      ) : (
+                        <p className="mt-2 text-sm text-slate-400">
+                          Not Available
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-5 border-t border-white/10 pt-4">
+                  <p className="text-xs text-slate-500">
+                    Last Updated: {formatDateTime(companyProfile.updated_at)}
+                  </p>
+                </div>
+              </>
+            )}
           </div>
         </section>
 
@@ -437,7 +580,6 @@ export default function IPOPage() {
                     : "Not Available"}
                 </p>
               </div>
-
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                   Records Available
@@ -446,15 +588,12 @@ export default function IPOPage() {
                   {gmpHistory.length}
                 </p>
               </div>
-
               <div className="col-span-2 sm:col-span-1">
                 <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                   Latest Update
                 </p>
                 <p className="mt-2 text-sm font-bold text-white">
-                  {latestGmp
-                    ? formatDateTime(latestGmp.updated_at)
-                    : "Not Available"}
+                  {latestGmp ? formatDateTime(latestGmp.updated_at) : "Not Available"}
                 </p>
               </div>
             </div>
@@ -465,9 +604,7 @@ export default function IPOPage() {
               </p>
             ) : gmpHistory.length === 0 ? (
               <div className="p-8 text-center">
-                <p className="font-bold text-white">
-                  GMP Data Not Available
-                </p>
+                <p className="font-bold text-white">GMP Data Not Available</p>
                 <p className="mt-2 text-sm text-slate-400">
                   No GMP records have been added for this IPO yet.
                 </p>
@@ -486,9 +623,7 @@ export default function IPOPage() {
                     {gmpHistory.map((item) => (
                       <tr key={item.id} className="border-t border-white/10">
                         <td className="px-5 py-4 font-bold text-emerald-300">
-                          {item.gmp !== null
-                            ? `₹${item.gmp}`
-                            : "Not Available"}
+                          {item.gmp !== null ? `₹${item.gmp}` : "Not Available"}
                         </td>
                         <td className="px-5 py-4 text-slate-300">
                           {item.source || "Not Available"}
@@ -530,15 +665,11 @@ export default function IPOPage() {
               </div>
             ) : subscriptionHistory.length === 0 ? (
               <div className="p-8 text-center sm:p-10">
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-2xl">
-                  —
-                </div>
-                <h3 className="mt-5 text-lg font-bold text-white">
+                <h3 className="text-lg font-bold text-white">
                   Subscription Data Not Available
                 </h3>
                 <p className="mx-auto mt-2 max-w-lg text-sm leading-7 text-slate-400">
                   No verified subscription records have been added for this IPO yet.
-                  Day-wise subscription figures will appear here when available.
                 </p>
               </div>
             ) : (
@@ -635,7 +766,6 @@ export default function IPOPage() {
             title="Important IPO Dates"
             description="Important dates currently available in the IPO record."
           />
-
           <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <InfoCard label="Opening Date" value={formatDate(ipo.open_date)} />
             <InfoCard label="Closing Date" value={formatDate(ipo.close_date)} />
@@ -650,7 +780,6 @@ export default function IPOPage() {
             title="Complete IPO Analysis"
             description="Additional IPO research sections. Verified information will be displayed as the relevant data becomes available."
           />
-
           <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {researchSections.map((section) => (
               <ComingSoonCard key={section.number} {...section} />

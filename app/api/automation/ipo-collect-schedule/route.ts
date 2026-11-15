@@ -187,3 +187,34 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+export async function GET() {
+  const auth = await requireApiRole(["owner", "admin"]);
+
+  if (!auth.authorized) {
+    return auth.response;
+  }
+
+  try {
+    const result = await fetchNseSchedule();
+
+    return jsonResponse({
+      success: true,
+      source: "NSE Official Upcoming IPO Schedule",
+      mode: "READ_ONLY_TEST",
+      detected: result.candidate.length,
+      responseKeys: getObjectKeys(result.payload),
+      recordKeys: getObjectKeys(result.candidate),
+      preview: result.candidate.slice(0, 10),
+      databaseWrites: 0,
+      automaticPublication: 0,
+    });
+  } catch (error) {
+    return jsonResponse({
+      success: false,
+      mode: "READ_ONLY_TEST",
+      error:
+        error instanceof Error ? error.message : "Unknown error",
+      databaseWrites: 0,
+    }, 502);
+  }
+}

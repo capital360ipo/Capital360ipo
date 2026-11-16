@@ -2,209 +2,131 @@
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
+import { requireApiRole } from "@/lib/require-api-role";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const NSE_BASE = "https://www.nseindia.com";
-
 const NSE_PAGE =
-  `${NSE_BASE}/market-data/all-upcoming-issues-ipo`;
+  "https://www.nseindia.com/market-data/all-upcoming-issues-ipo";
 
 const NSE_API =
-  `${NSE_BASE}/api/all-upcoming-issues?category=ipo`;
+  "https://www.nseindia.com/api/all-upcoming-issues?category=ipo";
 
-const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
-type NseIpo = {
-  symbol?: string;
-  companyName?: string;
-  series?: string;
-  status?: string;
-  issueStartDate?: string;
-  issueEndDate?: string;
-  issuePrice?: string;
-  issueSize?: string;
-  [key: string]: unknown;
+const HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+  Accept: "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  Referer: NSE_PAGE,
 };
 
-function parseDate(value?: string): string | null {
-  if (!value) return null;
-
-  const input = value.trim();
-
-  const formats = [
-    /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/,
-    /^(\d{4})-(\d{2})-(\d{2})$/,
-  ];
-
-  const months: Record<string, string> = {
-    jan: "01", feb: "02", mar: "03",
-    apr: "04", may: "05", jun: "06",
-    jul: "07", aug: "08", sep: "09",
-    oct: "10", nov: "11", dec: "12",
-  };
-
-  const short = input.match(formats[0]);
-
-  if (short) {
-    const day = short[1].padStart(2, "0");
-    const month = months[short[2].toLowerCase()];
-    const year = short[3];
-
-    if (!month) return null;
-    return `${year}-${month}-${day}`;
-  }
-
-  const iso = input.match(formats[1]);
-
-  if (iso) return input;
-
-  return null;
-}
-
-function parsePriceBand(value?: string): string | null {
-  if (!value) return null;
-
-  const numbers = value.replace(/,/g, "").match(/\d+(?:\.\d+)?/g);
-
-  if (!numbers || numbers.length === 0) return null;
-
-  if (numbers.length === 1) {
-    return `₹${numbers[0]}`;
-  }
-
-  return `₹${numbers[0]} - ₹${numbers[1]}`;
-}
-
-function normalizeRecord(row: NseIpo) {
-  const series = (row.series || "EQ").trim().toUpperCase();
-
-  const status = (row.status || "forthcoming")
-    .trim()
-    .toLowerCase();
-
-  return {
-    source: "NSE_UPCOMING_IPO",
-    company_name: (row.companyName || "").trim(),
-    symbol: (row.symbol || "").trim(),
-    ipo_type: series === "SME" ? "SME" : "Mainboard",
-    detected_status: status,
-    open_date: parseDate(row.issueStartDate),
-    close_date: parseDate(row.issueEndDate),
-    price_band: parsePriceBand(row.issuePrice),
-    issue_size: row.issueSize ?? null,
-    source_url: NSE_PAGE,
-    raw_payload: row,
-  };
+function jsonResponse(body: unknown, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
 }
 
 async function fetchUpcomingIpos() {
-  const headers = {
-    "User-Agent": USER_AGENT,
-    Accept: "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    Referer: NSE_PAGE,
-  };
-
   const session = await fetch(NSE_PAGE, {
-    method: "GET",
-    headers,
+    headers: HEADERS,
     cache: "no-store",
-    redirect: "follow",
+    signal: AbortSignal.timeout(25000),
   });
 
   if (!session.ok) {
-    throw new Error(
-      `NSE session request failed: HTTP ${session.status}`
-    );
+    throw new Error(`NSE session failed: HTTP ${session.status}`);
+  }
+
+  const cookieHeaders =
+    typeof session.headers.getSetCookie === "function"
+      ? session.headers.getSetCookie()
+      : [session.headers.get("set-cookie") || ""];
+
+  const cookies = cookieHeaders
+    .flatMap((value) => value.split(/,(?=[^;,]+=)/))
+    .map((value) => value.split(";")[0].trim())
+    .filter(Boolean)
+    .join("; ");
+
+  if (!cookies) {
+    throw new Error("NSE session did not provide cookies.");
   }
 
   const response = await fetch(NSE_API, {
-    method: "GET",
-    headers,
+    headers: {
+      ...HEADERS,
+      Cookie: cookies,
+    },
     cache: "no-store",
-    redirect: "follow",
+    signal: AbortSignal.timeout(25000),
   });
 
   if (!response.ok) {
-    throw new Error(
-      `NSE IPO API failed: HTTP ${response.status}`
+    throw new Error(`NSE IPO API failed: HTTP ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+
+  if (!origin || origin !== request.nextUrl.origin) {
+    return jsonResponse(
+      { success: false, error: "Invalid request origin." },
+      403
     );
   }
 
-  const payload = await response.json();
+  const auth = await requireApiRole(["owner", "admin"]);
 
-  if (!Array.isArray(payload)) {
-    throw new Error("NSE returned an unexpected IPO data format.");
+  if (!auth.authorized) {
+    return auth.response;
   }
 
-  return payload as NseIpo[];
-}
-
-export async function GET(request: NextRequest) {
   try {
-    const secret = process.env.CRON_SECRET;
+    const payload = await fetchUpcomingIpos();
 
-    if (!secret) {
-      return NextResponse.json(
-        { success: false, error: "CRON_SECRET is not configured." },
-        { status: 500 }
-      );
-    }
+    const records = Array.isArray(payload)
+      ? payload
+      : payload &&
+          typeof payload === "object" &&
+          Array.isArray((payload as { data?: unknown }).data)
+        ? (payload as { data: unknown[] }).data
+        : null;
 
-    const authorization = request.headers.get("authorization");
-
-    if (authorization !== `Bearer ${secret}`) {
-      return NextResponse.json(
-        { success: false, error: "Unauthorized." },
-        { status: 401 }
-      );
-    }
-
-    const rows = await fetchUpcomingIpos();
-
-    const records = rows
-      .map(normalizeRecord)
-      .filter((row) => row.company_name.length > 0)
-      .filter(
-        (row) =>
-          row.detected_status !== "closed" &&
-          row.detected_status !== "listed"
-      );
-
-    return NextResponse.json({
+    return jsonResponse({
       success: true,
-      mode: "READ_ONLY_DRY_RUN",
+      mode: "READ_ONLY_SCHEMA_PREVIEW",
       source: "NSE_UPCOMING_IPO",
-      detected: rows.length,
-      validRecords: records.length,
-      mainboard: records.filter(
-        (row) => row.ipo_type === "Mainboard"
-      ).length,
-      sme: records.filter(
-        (row) => row.ipo_type === "SME"
-      ).length,
+      responseType: Array.isArray(payload) ? "array" : typeof payload,
+      responseKeys:
+        payload && typeof payload === "object" && !Array.isArray(payload)
+          ? Object.keys(payload)
+          : [],
+      detected: records?.length ?? null,
+      sampleRecords: records ? records.slice(0, 10) : payload,
       databaseWrites: 0,
       automaticPublication: false,
-      records,
-      message: "NSE upcoming IPO data fetched successfully. No database changes made.",
+      message:
+        "NSE response received. Raw structure preview only; no database changes made.",
     });
   } catch (error) {
-    console.error("NSE upcoming IPO collector error:", error);
+    const message =
+      error instanceof Error ? error.message : "Unknown NSE error";
 
-    return NextResponse.json(
+    console.error("Upcoming IPO preview failed:", message);
+
+    return jsonResponse(
       {
         success: false,
-        mode: "READ_ONLY_DRY_RUN",
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown collector error",
+        mode: "READ_ONLY_SCHEMA_PREVIEW",
+        error: message,
         databaseWrites: 0,
       },
-      { status: 500 }
+      502
     );
   }
 }

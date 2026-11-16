@@ -3,6 +3,10 @@
     {
       "path": "/api/automation/ipo-collect",
       "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/automation/ipo-collect-nse-history",
+      "schedule": "30 2 * * *"
     }
   ]
 }

@@ -9,8 +9,16 @@ export const dynamic = "force-dynamic";
 const NSE_PAGE =
   "https://www.nseindia.com/market-data/all-upcoming-issues-ipo";
 
-const NSE_API =
-  "https://www.nseindia.com/api/all-upcoming-issues?category=ipo";
+const NSE_ENDPOINTS = [
+  {
+    name: "NSE_CURRENT_IPO",
+    url: "https://www.nseindia.com/api/ipo-current-issue",
+  },
+  {
+    name: "NSE_UPCOMING_IPO",
+    url: "https://www.nseindia.com/api/all-upcoming-issues?category=ipo",
+  },
+];
 
 const HEADERS = {
   "User-Agent":
@@ -27,32 +35,18 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-function getErrorDetails(error: unknown) {
-  const err = error as Error & {
-    cause?: {
-      code?: string;
-      message?: string;
-    };
-  };
-
-  return {
-    error: err?.message || "Unknown error",
-    cause: err?.cause?.message ?? null,
-    causeCode: err?.cause?.code ?? null,
-  };
-}
-
-function inspectStructure(
+function findArrays(
   value: unknown,
   path = "$",
   depth = 0,
   result: Array<{
     path: string;
     length: number;
-    firstRecordKeys: string[];
+    recordKeys: string[];
+    preview: unknown[];
   }> = []
 ) {
-  if (depth > 7 || value === null || typeof value !== "object") {
+  if (depth > 8 || value === null || typeof value !== "object") {
     return result;
   }
 
@@ -67,19 +61,15 @@ function inspectStructure(
     result.push({
       path,
       length: value.length,
-      firstRecordKeys:
+      recordKeys:
         firstObject && typeof firstObject === "object"
           ? Object.keys(firstObject)
           : [],
+      preview: value.slice(0, 3),
     });
 
-    value.slice(0, 3).forEach((item, index) => {
-      inspectStructure(
-        item,
-        `${path}[${index}]`,
-        depth + 1,
-        result
-      );
+    value.slice(0, 5).forEach((item, index) => {
+      findArrays(item, `${path}[${index}]`, depth + 1, result);
     });
 
     return result;
@@ -88,67 +78,62 @@ function inspectStructure(
   for (const [key, item] of Object.entries(
     value as Record<string, unknown>
   )) {
-    inspectStructure(
-      item,
-      `${path}.${key}`,
-      depth + 1,
-      result
-    );
+    findArrays(item, `${path}.${key}`, depth + 1, result);
   }
 
   return result;
 }
 
-function safePreview(payload: unknown) {
-  try {
-    return JSON.stringify(payload).slice(0, 3000);
-  } catch {
-    return "Preview unavailable";
+function getRootKeys(payload: unknown) {
+  if (
+    payload !== null &&
+    typeof payload === "object" &&
+    !Array.isArray(payload)
+  ) {
+    return Object.keys(payload as Record<string, unknown>);
   }
+
+  return [];
 }
 
-async function fetchNseSchedule() {
-  let pageResponse: Response;
+async function getNseCookies() {
+  const response = await fetch(NSE_PAGE, {
+    method: "GET",
+    cache: "no-store",
+    redirect: "follow",
+    signal: AbortSignal.timeout(20000),
+    headers: HEADERS,
+  });
 
-  try {
-    pageResponse = await fetch(NSE_PAGE, {
-      method: "GET",
-      cache: "no-store",
-      redirect: "follow",
-      signal: AbortSignal.timeout(20000),
-      headers: HEADERS,
-    });
-  } catch (error) {
-    const details = getErrorDetails(error);
-
-    throw new Error(
-      `NSE_PAGE_CONNECTION_FAILED: ${details.error}; ${details.cause ?? ""}`
-    );
+  if (!response.ok) {
+    throw new Error(`NSE_PAGE_HTTP_${response.status}`);
   }
 
-  if (!pageResponse.ok) {
-    throw new Error(
-      `NSE page returned HTTP ${pageResponse.status}`
-    );
-  }
-
-  const cookieHeaders = pageResponse.headers as Headers & {
+  const headers = response.headers as Headers & {
     getSetCookie?: () => string[];
   };
 
-  const cookies =
-    cookieHeaders.getSetCookie?.() ??
-    [pageResponse.headers.get("set-cookie") ?? ""];
+  const values =
+    headers.getSetCookie?.() ??
+    [response.headers.get("set-cookie") ?? ""];
 
-  const cookie = cookies
+  const cookie = values
     .map((value) => value.split(";")[0].trim())
     .filter(Boolean)
     .join("; ");
 
-  let apiResponse: Response;
+  return {
+    cookie,
+    finalUrl: response.url,
+  };
+}
 
+async function fetchEndpoint(
+  endpoint: (typeof NSE_ENDPOINTS)[number],
+  cookie: string
+) {
   try {
-    apiResponse = await fetch(NSE_API, {
+    const response = await fetch(endpoint.url, {
       method: "GET",
       cache: "no-store",
       redirect: "follow",
@@ -158,55 +143,96 @@ async function fetchNseSchedule() {
         ...(cookie ? { Cookie: cookie } : {}),
       },
     });
+
+    const contentType =
+      response.headers.get("content-type") || "";
+
+    const text = await response.text();
+
+    let payload: unknown = null;
+
+    if (contentType.toLowerCase().includes("json")) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = null;
+      }
+    }
+
+    const arrays = findArrays(payload);
+
+    const bestArray = arrays
+      .filter((item) => item.length > 0)
+      .sort((a, b) => b.length - a.length)[0];
+
+    return {
+      endpoint: endpoint.name,
+      requestedUrl: endpoint.url,
+      finalUrl: response.url,
+      httpStatus: response.status,
+      contentType,
+      success: response.ok && payload !== null,
+      responseKeys: getRootKeys(payload),
+      arrayStructure: arrays.map(
+        ({ path, length, recordKeys }) => ({
+          path,
+          length,
+          recordKeys,
+        })
+      ),
+      detected: bestArray?.length ?? 0,
+      recordKeys: bestArray?.recordKeys ?? [],
+      preview: bestArray?.preview ?? [],
+      responsePreview: text.slice(0, 1500),
+    };
   } catch (error) {
-    const details = getErrorDetails(error);
+    const err = error as Error & {
+      cause?: { code?: string; message?: string };
+    };
 
-    throw new Error(
-      `NSE_API_CONNECTION_FAILED: ${details.error}; ${details.cause ?? ""}`
-    );
+    return {
+      endpoint: endpoint.name,
+      requestedUrl: endpoint.url,
+      success: false,
+      error: err.message,
+      cause: err.cause?.message ?? null,
+      causeCode: err.cause?.code ?? null,
+      detected: 0,
+    };
   }
+}
 
-  if (!apiResponse.ok) {
-    throw new Error(
-      `NSE schedule API returned HTTP ${apiResponse.status}`
-    );
-  }
+async function runDiagnostic() {
+  const session = await getNseCookies();
 
-  const contentType =
-    apiResponse.headers.get("content-type") || "";
+  const results = await Promise.all(
+    NSE_ENDPOINTS.map((endpoint) =>
+      fetchEndpoint(endpoint, session.cookie)
+    )
+  );
 
-  if (!contentType.toLowerCase().includes("json")) {
-    throw new Error(
-      `NSE API returned non-JSON response. Content-Type: ${contentType}`
-    );
-  }
-
-  let payload: unknown;
-
-  try {
-    payload = await apiResponse.json();
-  } catch {
-    throw new Error("NSE API returned invalid JSON.");
-  }
-
-  const arrays = inspectStructure(payload);
-
-  const candidate = arrays
-    .filter((item) => item.length > 0)
-    .sort((a, b) => b.length - a.length)[0];
+  const totalDetected = results.reduce(
+    (total, item) => total + item.detected,
+    0
+  );
 
   return {
-    payload,
-    arrays,
-    candidate,
-    apiStatus: apiResponse.status,
-    apiFinalUrl: apiResponse.url,
-    contentType,
-    pageFinalUrl: pageResponse.url,
+    success: totalDetected > 0,
+    source: "NSE Official IPO APIs",
+    mode: "READ_ONLY_DIAGNOSTIC",
+    pageFinalUrl: session.finalUrl,
+    totalDetected,
+    endpoints: results,
+    databaseWrites: 0,
+    automaticPublication: 0,
+    message:
+      totalDetected > 0
+        ? "NSE IPO records detected. Ready for field mapping."
+        : "No records detected. Inspect endpoint responses before choosing a fallback source.",
   };
 }
 
-async function authorizeOwner(request?: NextRequest) {
+async function authorize(request?: NextRequest) {
   if (request) {
     const origin = request.headers.get("origin");
 
@@ -214,10 +240,7 @@ async function authorizeOwner(request?: NextRequest) {
       return {
         authorized: false as const,
         response: jsonResponse(
-          {
-            success: false,
-            error: "Invalid request origin.",
-          },
+          { success: false, error: "Invalid request origin." },
           403
         ),
       };
@@ -236,98 +259,23 @@ async function authorizeOwner(request?: NextRequest) {
   return { authorized: true as const };
 }
 
-async function runReadOnlyTest() {
-  const result = await fetchNseSchedule();
-
-  const responseKeys =
-    result.payload !== null &&
-    typeof result.payload === "object" &&
-    !Array.isArray(result.payload)
-      ? Object.keys(result.payload as Record<string, unknown>)
-      : [];
-
-  if (!result.candidate) {
-    return {
-      success: false,
-      source: "NSE Official Upcoming IPO Schedule",
-      mode: "READ_ONLY_DIAGNOSTIC",
-      error: "No non-empty data array found in NSE response.",
-      apiStatus: result.apiStatus,
-      apiFinalUrl: result.apiFinalUrl,
-      pageFinalUrl: result.pageFinalUrl,
-      contentType: result.contentType,
-      payloadType: Array.isArray(result.payload)
-        ? "array"
-        : typeof result.payload,
-      responseKeys,
-      arrayStructure: result.arrays,
-      payloadPreview: safePreview(result.payload),
-      databaseWrites: 0,
-    };
-  }
-
-  const candidateArray = (() => {
-    let current: unknown = result.payload;
-
-    for (const part of result.candidate!.path
-      .replace(/^\$\.?/, "")
-      .split(".")) {
-      if (!part) continue;
-
-      const match = part.match(/^(.+)\[(\d+)\]$/);
-
-      if (match) {
-        current =
-          (current as Record<string, unknown>)[match[1]];
-        current = (current as unknown[])[Number(match[2])];
-      } else {
-        current = (current as Record<string, unknown>)[part];
-      }
-    }
-
-    return current;
-  })();
-
-  const records = Array.isArray(candidateArray)
-    ? candidateArray
-    : [];
-
-  return {
-    success: true,
-    source: "NSE Official Upcoming IPO Schedule",
-    mode: "READ_ONLY_DIAGNOSTIC",
-    detected: records.length,
-    apiStatus: result.apiStatus,
-    apiFinalUrl: result.apiFinalUrl,
-    contentType: result.contentType,
-    responseKeys,
-    arrayStructure: result.arrays,
-    recordKeys: result.candidate.firstRecordKeys,
-    preview: records.slice(0, 5),
-    databaseWrites: 0,
-  };
-}
-
 export async function POST(request: NextRequest) {
-  const auth = await authorizeOwner(request);
+  const auth = await authorize(request);
 
-  if (!auth.authorized) {
-    return auth.response;
-  }
+  if (!auth.authorized) return auth.response;
 
   try {
-    return jsonResponse(await runReadOnlyTest());
+    return jsonResponse(await runDiagnostic());
   } catch (error) {
-    const details = getErrorDetails(error);
+    const err = error as Error;
 
-    console.error("NSE schedule POST test failed:", details);
+    console.error("NSE IPO diagnostic failed:", err);
 
     return jsonResponse(
       {
         success: false,
-        source: "NSE Official Upcoming IPO Schedule",
         mode: "READ_ONLY_DIAGNOSTIC",
-        ...details,
+        error: err.message,
         databaseWrites: 0,
       },
       502
@@ -336,25 +284,22 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET() {
-  const auth = await authorizeOwner();
+  const auth = await authorize();
 
-  if (!auth.authorized) {
-    return auth.response;
-  }
+  if (!auth.authorized) return auth.response;
 
   try {
-    return jsonResponse(await runReadOnlyTest());
+    return jsonResponse(await runDiagnostic());
   } catch (error) {
-    const details = getErrorDetails(error);
+    const err = error as Error;
 
-    console.error("NSE schedule GET test failed:", details);
+    console.error("NSE IPO diagnostic failed:", err);
 
     return jsonResponse(
       {
         success: false,
-        source: "NSE Official Upcoming IPO Schedule",
         mode: "READ_ONLY_DIAGNOSTIC",
-        ...details,
+        error: err.message,
         databaseWrites: 0,
       },
       502

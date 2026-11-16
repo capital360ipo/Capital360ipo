@@ -11,6 +11,7 @@ type SourceResult = {
   detectedRows: number;
   sampleRows: string[][];
   pageContainsUpcoming?: boolean;
+  diagnostic?: string;
   error?: string;
 };
 
@@ -25,11 +26,13 @@ type IpoCandidate = {
   sourceNames: string[];
   sourceUrls: string[];
   verificationStatus: "UNVERIFIED";
+  lifecycleStatus?: "UPCOMING" | "OPEN" | "HISTORICAL" | "UNKNOWN";
 };
 
 type PreviewResult = {
   success?: boolean;
   mode?: string;
+  indiaToday?: string;
   sourcesChecked?: number;
   successfulSources?: number;
   totalDetectedRows?: number;
@@ -42,6 +45,19 @@ type PreviewResult = {
   results?: SourceResult[];
   error?: string;
 };
+
+function lifecycleColor(status?: string) {
+  switch (status) {
+    case "UPCOMING":
+      return "text-blue-400";
+    case "OPEN":
+      return "text-green-400";
+    case "HISTORICAL":
+      return "text-slate-400";
+    default:
+      return "text-amber-400";
+  }
+}
 
 export default function IpoCalendarPreviewButton() {
   const [loading, setLoading] = useState(false);
@@ -113,6 +129,12 @@ export default function IpoCalendarPreviewButton() {
                 Source inspection completed
               </p>
 
+              {result.indiaToday && (
+                <p className="mt-2 text-slate-400">
+                  India Date: {result.indiaToday}
+                </p>
+              )}
+
               <div className="mt-3 grid grid-cols-2 gap-3">
                 <div className="rounded-lg bg-slate-900 p-3">
                   <p className="text-xs text-slate-400">Raw Candidates</p>
@@ -159,30 +181,57 @@ export default function IpoCalendarPreviewButton() {
 
               {result.normalizedCandidates?.length ? (
                 <div className="mt-3 space-y-3">
-                  {result.normalizedCandidates.map((item, index) => (
-                    <div
-                      key={`${item.normalizedName}-${index}`}
-                      className="rounded-lg border border-slate-700 bg-slate-900 p-3"
-                    >
-                      <p className="font-semibold text-white">
-                        {index + 1}. {item.companyName}
-                      </p>
+                  {result.normalizedCandidates.map((item, index) => {
+                    const lifecycle =
+                      item.lifecycleStatus ?? "UNKNOWN";
 
-                      <div className="mt-2 space-y-1 text-slate-300">
-                        <p>IPO Type: {item.ipoType}</p>
-                        <p>Open Date: {item.openDate ?? "Not available"}</p>
-                        <p>Close Date: {item.closeDate ?? "Not available"}</p>
-                        <p>Price Band: {item.priceBand ?? "Not available"}</p>
-                        <p>Issue Size: {item.issueSize ?? "Not available"}</p>
-                        <p>
-                          Sources: {item.sourceNames?.join(", ") || "Unknown"}
+                    return (
+                      <div
+                        key={`${item.normalizedName}-${index}`}
+                        className="rounded-lg border border-slate-700 bg-slate-900 p-3"
+                      >
+                        <p className="font-semibold text-white">
+                          {index + 1}. {item.companyName}
                         </p>
-                        <p className="text-amber-400">
-                          Verification: {item.verificationStatus}
-                        </p>
+
+                        <div className="mt-2 space-y-1 text-slate-300">
+                          <p>IPO Type: {item.ipoType}</p>
+
+                          <p>
+                            Lifecycle Status:{" "}
+                            <span className={lifecycleColor(lifecycle)}>
+                              {lifecycle}
+                            </span>
+                          </p>
+
+                          <p>
+                            Open Date: {item.openDate ?? "Not available"}
+                          </p>
+
+                          <p>
+                            Close Date: {item.closeDate ?? "Not available"}
+                          </p>
+
+                          <p>
+                            Price Band: {item.priceBand ?? "Not available"}
+                          </p>
+
+                          <p>
+                            Issue Size: {item.issueSize ?? "Not available"}
+                          </p>
+
+                          <p>
+                            Sources:{" "}
+                            {item.sourceNames?.join(", ") || "Unknown"}
+                          </p>
+
+                          <p className="text-amber-400">
+                            Verification: {item.verificationStatus}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <p className="mt-2 text-amber-400">
@@ -191,7 +240,7 @@ export default function IpoCalendarPreviewButton() {
               )}
 
               <h3 className="mt-6 font-semibold text-cyan-400">
-                Source Details
+                Source Details & Diagnostics
               </h3>
 
               {result.results?.map((item) => (
@@ -199,7 +248,9 @@ export default function IpoCalendarPreviewButton() {
                   key={item.source}
                   className="mt-3 rounded-lg border border-slate-700 p-3"
                 >
-                  <p className="font-semibold text-white">{item.source}</p>
+                  <p className="font-semibold text-white">
+                    {item.source}
+                  </p>
 
                   <p className="mt-1 text-slate-300">
                     Status: {item.success ? "Success" : "Failed"}
@@ -213,8 +264,24 @@ export default function IpoCalendarPreviewButton() {
                     Rows: {item.detectedRows}
                   </p>
 
+                  <p className="text-slate-300">
+                    HTML Length: {item.htmlLength ?? "N/A"}
+                  </p>
+
+                  <p className="text-slate-300">
+                    Content Type: {item.contentType ?? "N/A"}
+                  </p>
+
+                  {item.diagnostic && (
+                    <p className="mt-2 text-amber-400">
+                      Diagnostic: {item.diagnostic}
+                    </p>
+                  )}
+
                   {item.error && (
-                    <p className="mt-2 text-red-400">{item.error}</p>
+                    <p className="mt-2 text-red-400">
+                      Error: {item.error}
+                    </p>
                   )}
 
                   {item.sampleRows?.length > 0 && (
@@ -232,7 +299,7 @@ export default function IpoCalendarPreviewButton() {
             </>
           )}
         </div>
-      )}
+      ))}
     </section>
   );
 }

@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState } from "react";
@@ -6,14 +5,24 @@ import { useState } from "react";
 type SourceResult = {
   source: string;
   success: boolean;
+  reachable?: boolean;
+  usableData?: boolean;
+  requestedUrl?: string;
+  finalUrl?: string | null;
+  pageTitle?: string | null;
   httpStatus: number | null;
   contentType?: string | null;
   htmlLength?: number;
   detectedRows: number;
+  candidateCount?: number;
+  assessment?: string;
   sampleRows: string[][];
   pageContainsUpcoming?: boolean;
-  diagnostic?: string;
+  diagnostic?: string | null;
   error?: string;
+  errorName?: string;
+  causeName?: string | null;
+  causeMessage?: string | null;
 };
 
 type IpoCandidate = {
@@ -36,6 +45,8 @@ type PreviewResult = {
   indiaToday?: string;
   sourcesChecked?: number;
   successfulSources?: number;
+  reachableSources?: number;
+  usableSources?: number;
   totalDetectedRows?: number;
   rawCandidateCount?: number;
   uniqueCandidateCount?: number;
@@ -74,6 +85,7 @@ export default function IpoCalendarPreviewButton() {
         {
           method: "POST",
           credentials: "same-origin",
+          cache: "no-store",
         }
       );
 
@@ -130,58 +142,31 @@ export default function IpoCalendarPreviewButton() {
                 Source inspection completed
               </p>
 
-              {result.indiaToday && (
-                <p className="mt-2 text-slate-400">
-                  India Date: {result.indiaToday}
-                </p>
-              )}
+              <p className="mt-2 text-slate-400">
+                India Date: {result.indiaToday ?? "N/A"}
+              </p>
 
               <div className="mt-3 grid grid-cols-2 gap-3">
-                <div className="rounded-lg bg-slate-900 p-3">
-                  <p className="text-xs text-slate-400">
-                    Raw Candidates
-                  </p>
-                  <p className="mt-1 text-xl font-bold text-white">
-                    {result.rawCandidateCount ?? "N/A"}
-                  </p>
-                </div>
-
-                <div className="rounded-lg bg-slate-900 p-3">
-                  <p className="text-xs text-slate-400">
-                    Unique Candidates
-                  </p>
-                  <p className="mt-1 text-xl font-bold text-white">
-                    {result.uniqueCandidateCount ?? "N/A"}
-                  </p>
-                </div>
-
-                <div className="rounded-lg bg-slate-900 p-3">
-                  <p className="text-xs text-slate-400">Duplicates</p>
-                  <p className="mt-1 text-xl font-bold text-white">
-                    {result.duplicateCount ?? "N/A"}
-                  </p>
-                </div>
-
-                <div className="rounded-lg bg-slate-900 p-3">
-                  <p className="text-xs text-slate-400">
-                    Detected Rows
-                  </p>
-                  <p className="mt-1 text-xl font-bold text-white">
-                    {result.totalDetectedRows ?? 0}
-                  </p>
-                </div>
+                {[
+                  ["Raw Candidates", result.rawCandidateCount],
+                  ["Unique Candidates", result.uniqueCandidateCount],
+                  ["Duplicates", result.duplicateCount],
+                  ["Detected Rows", result.totalDetectedRows],
+                  ["Sources Checked", result.sourcesChecked],
+                  ["Reachable Sources", result.reachableSources ?? result.successfulSources],
+                  ["Usable Sources", result.usableSources],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-lg bg-slate-900 p-3">
+                    <p className="text-xs text-slate-400">{label}</p>
+                    <p className="mt-1 text-xl font-bold text-white">
+                      {value ?? "N/A"}
+                    </p>
+                  </div>
+                ))}
               </div>
 
               <div className="mt-4 space-y-1 text-slate-300">
-                <p>
-                  Sources checked: {result.sourcesChecked ?? 0}
-                </p>
-                <p>
-                  Successful sources: {result.successfulSources ?? 0}
-                </p>
-                <p>
-                  Database writes: {result.databaseWrites ?? 0}
-                </p>
+                <p>Database writes: {result.databaseWrites ?? 0}</p>
                 <p>
                   Automatic publication:{" "}
                   {result.automaticPublication ? "Yes" : "No"}
@@ -195,8 +180,7 @@ export default function IpoCalendarPreviewButton() {
               {result.normalizedCandidates?.length ? (
                 <div className="mt-3 space-y-3">
                   {result.normalizedCandidates.map((item, index) => {
-                    const lifecycle =
-                      item.lifecycleStatus ?? "UNKNOWN";
+                    const lifecycle = item.lifecycleStatus ?? "UNKNOWN";
 
                     return (
                       <div
@@ -209,35 +193,19 @@ export default function IpoCalendarPreviewButton() {
 
                         <div className="mt-2 space-y-1 text-slate-300">
                           <p>IPO Type: {item.ipoType}</p>
-
                           <p>
                             Lifecycle Status:{" "}
                             <span className={lifecycleColor(lifecycle)}>
                               {lifecycle}
                             </span>
                           </p>
-
+                          <p>Open Date: {item.openDate ?? "Not available"}</p>
+                          <p>Close Date: {item.closeDate ?? "Not available"}</p>
+                          <p>Price Band: {item.priceBand ?? "Not available"}</p>
+                          <p>Issue Size: {item.issueSize ?? "Not available"}</p>
                           <p>
-                            Open Date: {item.openDate ?? "Not available"}
+                            Sources: {item.sourceNames?.join(", ") || "Unknown"}
                           </p>
-
-                          <p>
-                            Close Date: {item.closeDate ?? "Not available"}
-                          </p>
-
-                          <p>
-                            Price Band: {item.priceBand ?? "Not available"}
-                          </p>
-
-                          <p>
-                            Issue Size: {item.issueSize ?? "Not available"}
-                          </p>
-
-                          <p>
-                            Sources:{" "}
-                            {item.sourceNames?.join(", ") || "Unknown"}
-                          </p>
-
                           <p className="text-amber-400">
                             Verification: {item.verificationStatus}
                           </p>
@@ -261,29 +229,26 @@ export default function IpoCalendarPreviewButton() {
                   key={item.source}
                   className="mt-3 rounded-lg border border-slate-700 p-3"
                 >
-                  <p className="font-semibold text-white">
-                    {item.source}
-                  </p>
+                  <p className="font-semibold text-white">{item.source}</p>
 
-                  <p className="mt-1 text-slate-300">
-                    Status: {item.success ? "Success" : "Failed"}
-                  </p>
-
-                  <p className="text-slate-300">
-                    HTTP: {item.httpStatus ?? "N/A"}
-                  </p>
-
-                  <p className="text-slate-300">
-                    Rows: {item.detectedRows}
-                  </p>
-
-                  <p className="text-slate-300">
-                    HTML Length: {item.htmlLength ?? "N/A"}
-                  </p>
-
-                  <p className="text-slate-300">
-                    Content Type: {item.contentType ?? "N/A"}
-                  </p>
+                  <div className="mt-2 space-y-1 text-slate-300">
+                    <p>Status: {item.success ? "Success" : "Failed"}</p>
+                    <p>Reachable: {item.reachable ? "Yes" : "No"}</p>
+                    <p>Usable IPO Data: {item.usableData ? "Yes" : "No"}</p>
+                    <p>HTTP: {item.httpStatus ?? "N/A"}</p>
+                    <p>Rows: {item.detectedRows}</p>
+                    <p>Candidates: {item.candidateCount ?? "N/A"}</p>
+                    <p>HTML Length: {item.htmlLength ?? "N/A"}</p>
+                    <p>Content Type: {item.contentType ?? "N/A"}</p>
+                    <p>Assessment: {item.assessment ?? "N/A"}</p>
+                    <p>Page Title: {item.pageTitle ?? "N/A"}</p>
+                    <p className="break-all">
+                      Requested URL: {item.requestedUrl ?? "N/A"}
+                    </p>
+                    <p className="break-all">
+                      Final URL: {item.finalUrl ?? "N/A"}
+                    </p>
+                  </div>
 
                   {item.diagnostic && (
                     <p className="mt-2 text-amber-400">
@@ -294,6 +259,18 @@ export default function IpoCalendarPreviewButton() {
                   {item.error && (
                     <p className="mt-2 text-red-400">
                       Error: {item.error}
+                    </p>
+                  )}
+
+                  {item.errorName && (
+                    <p className="text-red-400">
+                      Error Type: {item.errorName}
+                    </p>
+                  )}
+
+                  {item.causeMessage && (
+                    <p className="break-words text-red-400">
+                      Cause: {item.causeName ?? "Unknown"} — {item.causeMessage}
                     </p>
                   )}
 

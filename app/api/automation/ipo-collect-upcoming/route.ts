@@ -1,4 +1,3 @@
-
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -15,10 +14,14 @@ const NSE_API =
 
 const HEADERS = {
   "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   Accept: "application/json, text/plain, */*",
   "Accept-Language": "en-US,en;q=0.9",
   Referer: NSE_PAGE,
+  Origin: "https://www.nseindia.com",
+  "sec-fetch-dest": "empty",
+  "sec-fetch-mode": "cors",
+  "sec-fetch-site": "same-origin",
 };
 
 function jsonResponse(body: unknown, status = 200) {
@@ -28,37 +31,32 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-async function fetchUpcomingIpos() {
-  const session = await fetch(NSE_PAGE, {
-    headers: HEADERS,
-    cache: "no-store",
-    signal: AbortSignal.timeout(25000),
-  });
+function extractCookies(response: Response) {
+  const headers = response.headers as Headers & {
+    getSetCookie?: () => string[];
+  };
 
-  if (!session.ok) {
-    throw new Error(`NSE session failed: HTTP ${session.status}`);
-  }
+  const values =
+    typeof headers.getSetCookie === "function"
+      ? headers.getSetCookie()
+      : [response.headers.get("set-cookie") || ""];
 
-  const cookieHeaders =
-    typeof session.headers.getSetCookie === "function"
-      ? session.headers.getSetCookie()
-      : [session.headers.get("set-cookie") || ""];
-
-  const cookies = cookieHeaders
+  return values
     .flatMap((value) => value.split(/,(?=[^;,]+=)/))
     .map((value) => value.split(";")[0].trim())
     .filter(Boolean)
     .join("; ");
+}
 
-  if (!cookies) {
-    throw new Error("NSE session did not provide cookies.");
+async function requestNseApi(cookies?: string) {
+  const headers: Record<string, string> = { ...HEADERS };
+
+  if (cookies) {
+    headers.Cookie = cookies;
   }
 
   const response = await fetch(NSE_API, {
-    headers: {
-      ...HEADERS,
-      Cookie: cookies,
-    },
+    headers,
     cache: "no-store",
     signal: AbortSignal.timeout(25000),
   });
@@ -67,7 +65,61 @@ async function fetchUpcomingIpos() {
     throw new Error(`NSE IPO API failed: HTTP ${response.status}`);
   }
 
+  const contentType = response.headers.get("content-type") || "";
+
+  if (!contentType.includes("json")) {
+    throw new Error(
+      "NSE API returned a non-JSON response. Access may be restricted."
+    );
+  }
+
   return await response.json();
+}
+
+async function fetchUpcomingIpos() {
+  // First attempt: direct API request without requiring cookies.
+  try {
+    return await requestNseApi();
+  } catch (directError) {
+    // Second attempt: create an NSE browser session.
+    const session = await fetch(NSE_PAGE, {
+      headers: {
+        ...HEADERS,
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+      },
+      cache: "no-store",
+      redirect: "follow",
+      signal: AbortSignal.timeout(25000),
+    });
+
+    if (!session.ok) {
+      throw new Error(
+        `NSE page session failed: HTTP ${session.status}. Direct API: ${
+          directError instanceof Error
+            ? directError.message
+            : "Request failed"
+        }`
+      );
+    }
+
+    const cookies = extractCookies(session);
+
+    if (!cookies) {
+      throw new Error(
+        `NSE did not provide session cookies. Direct API result: ${
+          directError instanceof Error
+            ? directError.message
+            : "Request failed"
+        }`
+      );
+    }
+
+    return await requestNseApi(cookies);
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -101,9 +153,13 @@ export async function POST(request: NextRequest) {
       success: true,
       mode: "READ_ONLY_SCHEMA_PREVIEW",
       source: "NSE_UPCOMING_IPO",
-      responseType: Array.isArray(payload) ? "array" : typeof payload,
+      responseType: Array.isArray(payload)
+        ? "array"
+        : typeof payload,
       responseKeys:
-        payload && typeof payload === "object" && !Array.isArray(payload)
+        payload &&
+        typeof payload === "object" &&
+        !Array.isArray(payload)
           ? Object.keys(payload)
           : [],
       detected: records?.length ?? null,
@@ -115,7 +171,9 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Unknown NSE error";
+      error instanceof Error
+        ? error.message
+        : "Unknown NSE error";
 
     console.error("Upcoming IPO preview failed:", message);
 
@@ -125,6 +183,7 @@ export async function POST(request: NextRequest) {
         mode: "READ_ONLY_SCHEMA_PREVIEW",
         error: message,
         databaseWrites: 0,
+        automaticPublication: false,
       },
       502
     );

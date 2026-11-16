@@ -1,8 +1,10 @@
+
 import Link from "next/link";
 import { requireOwner } from "@/lib/require-owner";
 import StaffForm from "./staff-form";
 import IpoCollectorButton from "./ipo-collector-button";
 import NseIpoCollectorButton from "./nse-ipo-collector-button";
+import NseUpcomingIpoPreviewButton from "./nse-upcoming-ipo-preview-button";
 import NseCsvImport from "./nse-csv-import";
 import IpoLifecycleButton from "./ipo-lifecycle-button";
 import NseAttachmentParserButton from "./nse-attachment-parser-button";
@@ -20,12 +22,9 @@ export default async function OwnerDashboard() {
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-10 text-white">
       <div className="mx-auto max-w-7xl space-y-8">
-
         <header className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold">
-              Capital360IPO
-            </h1>
+            <h1 className="text-3xl font-bold">Capital360IPO</h1>
             <p className="mt-2 text-sm text-slate-400">
               Owner Dashboard
             </p>
@@ -40,14 +39,10 @@ export default async function OwnerDashboard() {
         </header>
 
         <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-          <h2 className="text-lg font-semibold">
-            Account Information
-          </h2>
-
+          <h2 className="text-lg font-semibold">Account Information</h2>
           <p className="mt-2 text-sm text-slate-300">
             Email: {user.email}
           </p>
-
           <p className="mt-1 text-sm text-slate-300">
             Role: {profile.role}
           </p>
@@ -59,23 +54,15 @@ export default async function OwnerDashboard() {
           </h2>
 
           <IpoCollectorButton />
-
           <NseIpoCollectorButton />
-
+          <NseUpcomingIpoPreviewButton />
           <NseCsvImport />
-
           <IpoLifecycleButton />
-
           <NseAttachmentParserButton />
-
           <NseListingCollectorButton />
-
           <NseIpoTrackerPreview />
-
           <IpoSecurityMasterDiscoverButton />
-
           <IpoListingHistoryImport />
-
           <IpoListingHistoryReview />
         </section>
 
@@ -83,10 +70,8 @@ export default async function OwnerDashboard() {
           <h2 className="mb-4 text-xl font-semibold">
             Team Management
           </h2>
-
           <StaffForm />
         </section>
-
       </div>
     </main>
   );

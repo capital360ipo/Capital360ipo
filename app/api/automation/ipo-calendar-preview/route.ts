@@ -25,6 +25,19 @@ const SOURCES = [
   },
 ] as const;
 
+type IpoCandidate = {
+  companyName: string;
+  normalizedName: string;
+  ipoType: "MAINBOARD" | "SME" | "UNKNOWN";
+  openDate: string | null;
+  closeDate: string | null;
+  priceBand: string | null;
+  issueSize: string | null;
+  sourceNames: string[];
+  sourceUrls: string[];
+  verificationStatus: "UNVERIFIED";
+};
+
 function jsonResponse(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
@@ -40,12 +53,28 @@ function cleanHtml(value: string): string {
     .replace(/&nbsp;|&#160;/gi, " ")
     .replace(/&amp;/gi, "&")
     .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#39;|&apos;|&#x27;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
-    .replace(/&#(\d+);/g, (_, code) =>
-      String.fromCodePoint(Number(code))
-    )
+    .replace(/&#(x[0-9a-f]+|\d+);/gi, (match, code) => {
+      try {
+        const number = code.toLowerCase().startsWith("x")
+          ? parseInt(code.slice(1), 16)
+          : parseInt(code, 10);
+
+        if (
+          !Number.isFinite(number) ||
+          number < 0 ||
+          number > 0x10ffff
+        ) {
+          return match;
+        }
+
+        return String.fromCodePoint(number);
+      } catch {
+        return match;
+      }
+    })
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -63,6 +92,233 @@ function extractRows(html: string) {
     })
     .filter((cells) => cells.length >= 2)
     .slice(0, 15);
+}
+
+function extractStructuredRows(html: string) {
+  const tables = html.match(/<table\b[^>]*>[\s\S]*?<\/table>/gi) || [];
+  const records: Array<{
+    cells: string[];
+    headers: string[];
+  }> = [];
+
+  for (const table of tables) {
+    const rows = table.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+    let headers: string[] = [];
+
+    for (const row of rows) {
+      const cells =
+        row.match(/<t[dh]\b[^>]*>[\s\S]*?<\/t[dh]>/gi) || [];
+
+      const values = cells
+        .map((cell) => cleanHtml(cell))
+        .filter(Boolean);
+
+      if (values.length < 2) continue;
+
+      const isHeader = values.some((value) =>
+        /^(name|company|company name|ipo name)$/i.test(value)
+      );
+
+      if (isHeader) {
+        headers = values.map((value) => value.toLowerCase());
+        continue;
+      }
+
+      records.push({
+        cells: values,
+        headers,
+      });
+    }
+  }
+
+  if (records.length === 0) {
+    return extractRows(html).map((cells) => ({
+      cells,
+      headers: [],
+    }));
+  }
+
+  return records;
+}
+
+function normalizeName(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/\b(limited|ltd|private|pvt)\b/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function parseDate(value: string | undefined): string | null {
+  if (!value) return null;
+
+  const cleaned = value.trim();
+
+  if (
+    !cleaned ||
+    /to be announced|not announced|tba|^[-–—]$/i.test(cleaned)
+  ) {
+    return null;
+  }
+
+  const timestamp = Date.parse(cleaned);
+
+  if (!Number.isFinite(timestamp)) return null;
+
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+function parsePeriod(value: string | undefined) {
+  if (!value) {
+    return {
+      openDate: null,
+      closeDate: null,
+    };
+  }
+
+  const parts = value.split(/\s+-\s+|\s+to\s+/i);
+
+  if (parts.length >= 2) {
+    return {
+      openDate: parseDate(parts[0]),
+      closeDate: parseDate(parts[1]),
+    };
+  }
+
+  return {
+    openDate: parseDate(value),
+    closeDate: null,
+  };
+}
+
+function cleanPriceBand(value: string | undefined) {
+  if (!value) return null;
+
+  const cleaned = value.trim();
+
+  if (/^[-–—]$/.test(cleaned) || /^₹?\s*0\s*-\s*0$/.test(cleaned)) {
+    return null;
+  }
+
+  return cleaned;
+}
+
+function getHeaderValue(
+  cells: string[],
+  headers: string[],
+  pattern: RegExp
+) {
+  const index = headers.findIndex((header) => pattern.test(header));
+
+  return index >= 0 ? cells[index] : undefined;
+}
+
+function detectIpoType(
+  sourceName: string,
+  cells: string[]
+): IpoCandidate["ipoType"] {
+  if (sourceName === "BSE_SME") return "SME";
+  if (sourceName === "BSE_MAINBOARD") return "MAINBOARD";
+
+  const text = cells.join(" ").toLowerCase();
+
+  if (/\bsme\b/.test(text)) return "SME";
+  if (/\bmainboard\b/.test(text)) return "MAINBOARD";
+
+  return "UNKNOWN";
+}
+
+function extractCandidates(
+  source: (typeof SOURCES)[number],
+  html: string
+): IpoCandidate[] {
+  const records = extractStructuredRows(html);
+  const candidates: IpoCandidate[] = [];
+
+  for (const record of records) {
+    const { cells, headers } = record;
+
+    const company =
+      getHeaderValue(cells, headers, /company|name/) || cells[0];
+
+    if (
+      !company ||
+      /^(name|company|company name|ipo name)$/i.test(company.trim()) ||
+      company.length > 120
+    ) {
+      continue;
+    }
+
+    const openValue = getHeaderValue(cells, headers, /open date/);
+    const closeValue = getHeaderValue(cells, headers, /close date/);
+    const periodValue = getHeaderValue(
+      cells,
+      headers,
+      /issue period|issue date|date/
+    );
+
+    const period = parsePeriod(periodValue);
+
+    const openDate = parseDate(openValue) || period.openDate;
+    const closeDate = parseDate(closeValue) || period.closeDate;
+
+    const priceBand = cleanPriceBand(
+      getHeaderValue(cells, headers, /price band/)
+    );
+
+    const issueSize =
+      getHeaderValue(cells, headers, /issue size/) || null;
+
+    const normalizedName = normalizeName(company);
+
+    if (!normalizedName || normalizedName.length < 2) continue;
+
+    candidates.push({
+      companyName: company.trim(),
+      normalizedName,
+      ipoType: detectIpoType(source.name, cells),
+      openDate,
+      closeDate,
+      priceBand,
+      issueSize,
+      sourceNames: [source.name],
+      sourceUrls: [source.url],
+      verificationStatus: "UNVERIFIED",
+    });
+  }
+
+  return candidates;
+}
+
+function mergeCandidates(candidates: IpoCandidate[]) {
+  const merged = new Map<string, IpoCandidate>();
+
+  for (const candidate of candidates) {
+    const existing = merged.get(candidate.normalizedName);
+
+    if (!existing) {
+      merged.set(candidate.normalizedName, { ...candidate });
+      continue;
+    }
+
+    if (existing.ipoType === "UNKNOWN" && candidate.ipoType !== "UNKNOWN") {
+      existing.ipoType = candidate.ipoType;
+    }
+
+    existing.openDate ||= candidate.openDate;
+    existing.closeDate ||= candidate.closeDate;
+    existing.priceBand ||= candidate.priceBand;
+    existing.issueSize ||= candidate.issueSize;
+
+    existing.sourceNames = Array.from(
+      new Set([...existing.sourceNames, ...candidate.sourceNames])
+    );
+
+    existing.sourceUrls = Array.from(
+      new Set([...existing.sourceUrls, ...candidate.sourceUrls])
+    );
+  }
+
+  return Array.from(merged.values()).slice(0, 100);
 }
 
 async function inspectSource(source: (typeof SOURCES)[number]) {
@@ -88,6 +344,7 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
         httpStatus: response.status,
         detectedRows: 0,
         sampleRows: [],
+        candidates: [],
         error: `HTTP ${response.status}`,
       };
     }
@@ -101,11 +358,13 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
         httpStatus: response.status,
         detectedRows: 0,
         sampleRows: [],
+        candidates: [],
         error: "Empty or oversized response",
       };
     }
 
     const rows = extractRows(html);
+    const candidates = extractCandidates(source, html);
 
     return {
       source: source.name,
@@ -115,10 +374,10 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
       htmlLength: html.length,
       detectedRows: rows.length,
       sampleRows: rows,
+      candidates,
       pageContainsUpcoming:
         /upcoming|public issue|ipo issues/i.test(cleanHtml(html)),
-      message:
-        "Read-only source inspection. No records saved.",
+      message: "Read-only source inspection. No records saved.",
     };
   } catch (error) {
     return {
@@ -127,6 +386,7 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
       httpStatus: null,
       detectedRows: 0,
       sampleRows: [],
+      candidates: [],
       error:
         error instanceof Error
           ? error.message
@@ -155,19 +415,26 @@ export async function POST(request: NextRequest) {
     SOURCES.map((source) => inspectSource(source))
   );
 
+  const allCandidates = results.flatMap((item) => item.candidates);
+  const normalizedCandidates = mergeCandidates(allCandidates);
+
   return jsonResponse({
     success: true,
-    mode: "READ_ONLY_SOURCE_DISCOVERY",
+    mode: "READ_ONLY_NORMALIZED_IPO_DISCOVERY",
     sourcesChecked: results.length,
     successfulSources: results.filter((item) => item.success).length,
     totalDetectedRows: results.reduce(
       (total, item) => total + item.detectedRows,
       0
     ),
+    rawCandidateCount: allCandidates.length,
+    uniqueCandidateCount: normalizedCandidates.length,
+    duplicateCount: allCandidates.length - normalizedCandidates.length,
     databaseWrites: 0,
     automaticPublication: false,
+    normalizedCandidates,
     results,
     message:
-      "Source inspection completed. No database records were changed.",
+      "IPO candidates extracted and normalized for review. No database records were changed.",
   });
 }

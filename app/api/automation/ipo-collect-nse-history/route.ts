@@ -326,3 +326,30 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+export async function GET(request: NextRequest) {
+  const secret = process.env.CRON_SECRET;
+
+  if (
+    !secret ||
+    request.headers.get("authorization") !== `Bearer ${secret}`
+  ) {
+    return jsonResponse(
+      { success: false, error: "Unauthorized" },
+      401
+    );
+  }
+
+  try {
+    return jsonResponse(await collectNseIpos());
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "NSE cron failed";
+
+    console.error("NSE cron failed:", message);
+
+    return jsonResponse(
+      { success: false, error: message },
+      502
+    );
+  }
+}

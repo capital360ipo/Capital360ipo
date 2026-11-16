@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState } from "react";
@@ -137,14 +138,18 @@ export default function IpoCalendarPreviewButton() {
 
               <div className="mt-3 grid grid-cols-2 gap-3">
                 <div className="rounded-lg bg-slate-900 p-3">
-                  <p className="text-xs text-slate-400">Raw Candidates</p>
+                  <p className="text-xs text-slate-400">
+                    Raw Candidates
+                  </p>
                   <p className="mt-1 text-xl font-bold text-white">
                     {result.rawCandidateCount ?? "N/A"}
                   </p>
                 </div>
 
                 <div className="rounded-lg bg-slate-900 p-3">
-                  <p className="text-xs text-slate-400">Unique Candidates</p>
+                  <p className="text-xs text-slate-400">
+                    Unique Candidates
+                  </p>
                   <p className="mt-1 text-xl font-bold text-white">
                     {result.uniqueCandidateCount ?? "N/A"}
                   </p>
@@ -158,7 +163,9 @@ export default function IpoCalendarPreviewButton() {
                 </div>
 
                 <div className="rounded-lg bg-slate-900 p-3">
-                  <p className="text-xs text-slate-400">Detected Rows</p>
+                  <p className="text-xs text-slate-400">
+                    Detected Rows
+                  </p>
                   <p className="mt-1 text-xl font-bold text-white">
                     {result.totalDetectedRows ?? 0}
                   </p>
@@ -166,9 +173,15 @@ export default function IpoCalendarPreviewButton() {
               </div>
 
               <div className="mt-4 space-y-1 text-slate-300">
-                <p>Sources checked: {result.sourcesChecked ?? 0}</p>
-                <p>Successful sources: {result.successfulSources ?? 0}</p>
-                <p>Database writes: {result.databaseWrites ?? 0}</p>
+                <p>
+                  Sources checked: {result.sourcesChecked ?? 0}
+                </p>
+                <p>
+                  Successful sources: {result.successfulSources ?? 0}
+                </p>
+                <p>
+                  Database writes: {result.databaseWrites ?? 0}
+                </p>
                 <p>
                   Automatic publication:{" "}
                   {result.automaticPublication ? "Yes" : "No"}
@@ -299,7 +312,7 @@ export default function IpoCalendarPreviewButton() {
             </>
           )}
         </div>
-      ))}
+      )}
     </section>
   );
 }

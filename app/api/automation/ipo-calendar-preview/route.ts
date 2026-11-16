@@ -13,8 +13,7 @@ const SOURCES = [
   },
   {
     name: "BSE_SME",
-    url: "https://www.bsesme.com/PublicIssues/SMEIPODRHP.aspx",
-  },
+    url: "https://www.bseindia.com/markets/PublicIssues/PublicIssues.aspx?id=2",
   {
     name: "ICICI_IPO_CALENDAR",
     url: "https://www.icicidirect.com/ipo",

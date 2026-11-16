@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState } from "react";
@@ -15,12 +14,31 @@ type SourceResult = {
   error?: string;
 };
 
+type IpoCandidate = {
+  companyName: string;
+  normalizedName: string;
+  ipoType: "MAINBOARD" | "SME" | "UNKNOWN";
+  openDate: string | null;
+  closeDate: string | null;
+  priceBand: string | null;
+  issueSize: string | null;
+  sourceNames: string[];
+  sourceUrls: string[];
+  verificationStatus: "UNVERIFIED";
+};
+
 type PreviewResult = {
   success?: boolean;
+  mode?: string;
   sourcesChecked?: number;
   successfulSources?: number;
   totalDetectedRows?: number;
+  rawCandidateCount?: number;
+  uniqueCandidateCount?: number;
+  duplicateCount?: number;
+  normalizedCandidates?: IpoCandidate[];
   databaseWrites?: number;
+  automaticPublication?: boolean;
   results?: SourceResult[];
   error?: string;
 };
@@ -67,7 +85,7 @@ export default function IpoCalendarPreviewButton() {
         MULTI-SOURCE IPO DISCOVERY
       </p>
 
-      <h2 className="mt-2 text-xl font-bold">
+      <h2 className="mt-2 text-xl font-bold text-white">
         IPO Calendar Discovery Preview
       </h2>
 
@@ -95,30 +113,93 @@ export default function IpoCalendarPreviewButton() {
                 Source inspection completed
               </p>
 
-              <p className="mt-2 text-slate-300">
-                Sources checked: {result.sourcesChecked ?? 0}
-              </p>
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <div className="rounded-lg bg-slate-900 p-3">
+                  <p className="text-xs text-slate-400">Raw Candidates</p>
+                  <p className="mt-1 text-xl font-bold text-white">
+                    {result.rawCandidateCount ?? "N/A"}
+                  </p>
+                </div>
 
-              <p className="text-slate-300">
-                Successful sources: {result.successfulSources ?? 0}
-              </p>
+                <div className="rounded-lg bg-slate-900 p-3">
+                  <p className="text-xs text-slate-400">Unique Candidates</p>
+                  <p className="mt-1 text-xl font-bold text-white">
+                    {result.uniqueCandidateCount ?? "N/A"}
+                  </p>
+                </div>
 
-              <p className="text-slate-300">
-                Total detected rows: {result.totalDetectedRows ?? 0}
-              </p>
+                <div className="rounded-lg bg-slate-900 p-3">
+                  <p className="text-xs text-slate-400">Duplicates</p>
+                  <p className="mt-1 text-xl font-bold text-white">
+                    {result.duplicateCount ?? "N/A"}
+                  </p>
+                </div>
 
-              <p className="text-slate-300">
-                Database writes: {result.databaseWrites ?? 0}
-              </p>
+                <div className="rounded-lg bg-slate-900 p-3">
+                  <p className="text-xs text-slate-400">Detected Rows</p>
+                  <p className="mt-1 text-xl font-bold text-white">
+                    {result.totalDetectedRows ?? 0}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-1 text-slate-300">
+                <p>Sources checked: {result.sourcesChecked ?? 0}</p>
+                <p>Successful sources: {result.successfulSources ?? 0}</p>
+                <p>Database writes: {result.databaseWrites ?? 0}</p>
+                <p>
+                  Automatic publication:{" "}
+                  {result.automaticPublication ? "Yes" : "No"}
+                </p>
+              </div>
+
+              <h3 className="mt-6 font-semibold text-cyan-400">
+                Normalized IPO Candidates
+              </h3>
+
+              {result.normalizedCandidates?.length ? (
+                <div className="mt-3 space-y-3">
+                  {result.normalizedCandidates.map((item, index) => (
+                    <div
+                      key={`${item.normalizedName}-${index}`}
+                      className="rounded-lg border border-slate-700 bg-slate-900 p-3"
+                    >
+                      <p className="font-semibold text-white">
+                        {index + 1}. {item.companyName}
+                      </p>
+
+                      <div className="mt-2 space-y-1 text-slate-300">
+                        <p>IPO Type: {item.ipoType}</p>
+                        <p>Open Date: {item.openDate ?? "Not available"}</p>
+                        <p>Close Date: {item.closeDate ?? "Not available"}</p>
+                        <p>Price Band: {item.priceBand ?? "Not available"}</p>
+                        <p>Issue Size: {item.issueSize ?? "Not available"}</p>
+                        <p>
+                          Sources: {item.sourceNames?.join(", ") || "Unknown"}
+                        </p>
+                        <p className="text-amber-400">
+                          Verification: {item.verificationStatus}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-2 text-amber-400">
+                  No normalized candidates returned by the API.
+                </p>
+              )}
+
+              <h3 className="mt-6 font-semibold text-cyan-400">
+                Source Details
+              </h3>
 
               {result.results?.map((item) => (
                 <div
                   key={item.source}
-                  className="mt-4 rounded-lg border border-slate-700 p-3"
+                  className="mt-3 rounded-lg border border-slate-700 p-3"
                 >
-                  <p className="font-semibold text-white">
-                    {item.source}
-                  </p>
+                  <p className="font-semibold text-white">{item.source}</p>
 
                   <p className="mt-1 text-slate-300">
                     Status: {item.success ? "Success" : "Failed"}
@@ -133,13 +214,11 @@ export default function IpoCalendarPreviewButton() {
                   </p>
 
                   {item.error && (
-                    <p className="mt-2 text-red-400">
-                      {item.error}
-                    </p>
+                    <p className="mt-2 text-red-400">{item.error}</p>
                   )}
 
-                  {item.sampleRows.length > 0 && (
-                    <pre className="mt-3 max-h-60 overflow-auto whitespace-pre-wrap break-words bg-slate-900 p-3 text-xs text-slate-300">
+                  {item.sampleRows?.length > 0 && (
+                    <pre className="mt-3 max-h-60 overflow-auto whitespace-pre-wrap break-words bg-slate-950 p-3 text-xs text-slate-300">
                       {JSON.stringify(item.sampleRows, null, 2)}
                     </pre>
                   )}
@@ -147,8 +226,8 @@ export default function IpoCalendarPreviewButton() {
               ))}
 
               <p className="mt-4 text-xs text-slate-500">
-                Read-only preview. No database records changed
-                and nothing was published.
+                Read-only preview. No database records changed and
+                nothing was published.
               </p>
             </>
           )}

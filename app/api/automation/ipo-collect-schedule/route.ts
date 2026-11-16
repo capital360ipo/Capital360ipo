@@ -1,3 +1,4 @@
+
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -7,18 +8,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const NSE_PAGE =
-  "https://www.nseindia.com/market-data/all-upcoming-issues-ipo";
+  "https://www.nseindia.in/market-data/all-upcoming-issues-ipo";
 
-const NSE_ENDPOINTS = [
-  {
-    name: "NSE_CURRENT_IPO",
-    url: "https://www.nseindia.com/api/ipo-current-issue",
-  },
-  {
-    name: "NSE_UPCOMING_IPO",
-    url: "https://www.nseindia.com/api/all-upcoming-issues?category=ipo",
-  },
-];
+const NSE_API =
+  "https://www.nseindia.in/api/public-past-issues";
 
 const HEADERS = {
   "User-Agent":
@@ -35,65 +28,41 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-function findArrays(
-  value: unknown,
-  path = "$",
-  depth = 0,
-  result: Array<{
-    path: string;
-    length: number;
-    recordKeys: string[];
-    preview: unknown[];
-  }> = []
-) {
-  if (depth > 8 || value === null || typeof value !== "object") {
-    return result;
+function getIndiaDateRange() {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+
+  const values = Object.fromEntries(
+    parts.map((part) => [part.type, part.value])
+  );
+
+  const today = new Date(
+    Date.UTC(
+      Number(values.year),
+      Number(values.month) - 1,
+      Number(values.day)
+    )
+  );
+
+  const from = new Date(today);
+  from.setUTCDate(from.getUTCDate() - 365);
+
+  function format(date: Date) {
+    const day = String(date.getUTCDate()).padStart(2, "0");
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const year = date.getUTCFullYear();
+
+    return `${day}-${month}-${year}`;
   }
 
-  if (Array.isArray(value)) {
-    const firstObject = value.find(
-      (item) =>
-        item !== null &&
-        typeof item === "object" &&
-        !Array.isArray(item)
-    );
-
-    result.push({
-      path,
-      length: value.length,
-      recordKeys:
-        firstObject && typeof firstObject === "object"
-          ? Object.keys(firstObject)
-          : [],
-      preview: value.slice(0, 3),
-    });
-
-    value.slice(0, 5).forEach((item, index) => {
-      findArrays(item, `${path}[${index}]`, depth + 1, result);
-    });
-
-    return result;
-  }
-
-  for (const [key, item] of Object.entries(
-    value as Record<string, unknown>
-  )) {
-    findArrays(item, `${path}.${key}`, depth + 1, result);
-  }
-
-  return result;
-}
-
-function getRootKeys(payload: unknown) {
-  if (
-    payload !== null &&
-    typeof payload === "object" &&
-    !Array.isArray(payload)
-  ) {
-    return Object.keys(payload as Record<string, unknown>);
-  }
-
-  return [];
+  return {
+    fromDate: format(from),
+    toDate: format(today),
+  };
 }
 
 async function getNseCookies() {
@@ -117,118 +86,190 @@ async function getNseCookies() {
     headers.getSetCookie?.() ??
     [response.headers.get("set-cookie") ?? ""];
 
-  const cookie = values
+  const cookies = values
     .map((value) => value.split(";")[0].trim())
-    .filter(Boolean)
-    .join("; ");
+    .filter(Boolean);
 
   return {
-    cookie,
+    cookie: cookies.join("; "),
+    cookieCount: cookies.length,
     finalUrl: response.url,
   };
 }
 
-async function fetchEndpoint(
-  endpoint: (typeof NSE_ENDPOINTS)[number],
-  cookie: string
+function findRecordArrays(
+  value: unknown,
+  path = "$",
+  depth = 0,
+  result: Array<{
+    path: string;
+    length: number;
+    recordKeys: string[];
+    preview: unknown[];
+    score: number;
+  }> = []
 ) {
-  try {
-    const response = await fetch(endpoint.url, {
-      method: "GET",
-      cache: "no-store",
-      redirect: "follow",
-      signal: AbortSignal.timeout(25000),
-      headers: {
-        ...HEADERS,
-        ...(cookie ? { Cookie: cookie } : {}),
-      },
+  if (
+    depth > 7 ||
+    value === null ||
+    typeof value !== "object"
+  ) {
+    return result;
+  }
+
+  if (Array.isArray(value)) {
+    const first = value.find(
+      (item) =>
+        item !== null &&
+        typeof item === "object" &&
+        !Array.isArray(item)
+    );
+
+    const keys =
+      first && typeof first === "object"
+        ? Object.keys(first)
+        : [];
+
+    const expected = [
+      "symbol",
+      "companyName",
+      "ipoStartDate",
+      "ipoEndDate",
+      "listingDate",
+      "securityType",
+      "issuePrice",
+    ];
+
+    const score = expected.filter((key) =>
+      keys.includes(key)
+    ).length;
+
+    result.push({
+      path,
+      length: value.length,
+      recordKeys: keys,
+      preview: value.slice(0, 5),
+      score,
     });
 
-    const contentType =
-      response.headers.get("content-type") || "";
-
-    const text = await response.text();
-
-    let payload: unknown = null;
-
-    if (contentType.toLowerCase().includes("json")) {
-      try {
-        payload = JSON.parse(text);
-      } catch {
-        payload = null;
-      }
-    }
-
-    const arrays = findArrays(payload);
-
-    const bestArray = arrays
-      .filter((item) => item.length > 0)
-      .sort((a, b) => b.length - a.length)[0];
-
-    return {
-      endpoint: endpoint.name,
-      requestedUrl: endpoint.url,
-      finalUrl: response.url,
-      httpStatus: response.status,
-      contentType,
-      success: response.ok && payload !== null,
-      responseKeys: getRootKeys(payload),
-      arrayStructure: arrays.map(
-        ({ path, length, recordKeys }) => ({
-          path,
-          length,
-          recordKeys,
-        })
-      ),
-      detected: bestArray?.length ?? 0,
-      recordKeys: bestArray?.recordKeys ?? [],
-      preview: bestArray?.preview ?? [],
-      responsePreview: text.slice(0, 1500),
-    };
-  } catch (error) {
-    const err = error as Error & {
-      cause?: { code?: string; message?: string };
-    };
-
-    return {
-      endpoint: endpoint.name,
-      requestedUrl: endpoint.url,
-      success: false,
-      error: err.message,
-      cause: err.cause?.message ?? null,
-      causeCode: err.cause?.code ?? null,
-      detected: 0,
-    };
+    return result;
   }
+
+  for (const [key, item] of Object.entries(
+    value as Record<string, unknown>
+  )) {
+    findRecordArrays(
+      item,
+      `${path}.${key}`,
+      depth + 1,
+      result
+    );
+  }
+
+  return result;
 }
 
 async function runDiagnostic() {
+  const dates = getIndiaDateRange();
   const session = await getNseCookies();
 
-  const results = await Promise.all(
-    NSE_ENDPOINTS.map((endpoint) =>
-      fetchEndpoint(endpoint, session.cookie)
-    )
-  );
+  const url = new URL(NSE_API);
 
-  const totalDetected = results.reduce(
-    (total, item) => total + item.detected,
-    0
-  );
+  url.searchParams.set("from_date", dates.fromDate);
+  url.searchParams.set("to_date", dates.toDate);
+  url.searchParams.set("security_type", "all");
+
+  const response = await fetch(url.toString(), {
+    method: "GET",
+    cache: "no-store",
+    redirect: "follow",
+    signal: AbortSignal.timeout(30000),
+    headers: {
+      ...HEADERS,
+      ...(session.cookie
+        ? { Cookie: session.cookie }
+        : {}),
+    },
+  });
+
+  const contentType =
+    response.headers.get("content-type") || "";
+
+  const responseText = await response.text();
+
+  let payload: unknown = null;
+  let parseError: string | null = null;
+
+  try {
+    payload = JSON.parse(responseText);
+  } catch (error) {
+    parseError = (error as Error).message;
+  }
+
+  const arrays = findRecordArrays(payload);
+
+  const bestArray = [...arrays].sort((a, b) => {
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+    return b.length - a.length;
+  })[0];
+
+  const records = bestArray?.preview ?? [];
+  const detected = bestArray?.length ?? 0;
 
   return {
-    success: totalDetected > 0,
-    source: "NSE Official IPO APIs",
-    mode: "READ_ONLY_DIAGNOSTIC",
-    pageFinalUrl: session.finalUrl,
-    totalDetected,
-    endpoints: results,
+    success: response.ok && payload !== null,
+    source: "NSE Official Historical IPO API",
+    mode: "READ_ONLY_HISTORICAL_DIAGNOSTIC",
+
+    requestedUrl: url.toString(),
+    finalUrl: response.url,
+
+    httpStatus: response.status,
+    contentType,
+
+    dateRange: {
+      fromDate: dates.fromDate,
+      toDate: dates.toDate,
+      securityType: "all",
+    },
+
+    session: {
+      pageFinalUrl: session.finalUrl,
+      cookieCount: session.cookieCount,
+    },
+
+    payloadType: Array.isArray(payload)
+      ? "array"
+      : typeof payload,
+
+    detected,
+    arrayStructure: arrays.map(
+      ({ path, length, recordKeys, score }) => ({
+        path,
+        length,
+        recordKeys,
+        score,
+      })
+    ),
+
+    recordKeys: bestArray?.recordKeys ?? [],
+    preview: records,
+
+    parseError,
+    responsePreview: responseText.slice(0, 1500),
+
     databaseWrites: 0,
     automaticPublication: 0,
-    message:
-      totalDetected > 0
-        ? "NSE IPO records detected. Ready for field mapping."
-        : "No records detected. Inspect endpoint responses before choosing a fallback source.",
+
+    message: !response.ok
+      ? "NSE returned an HTTP error."
+      : payload === null
+        ? "NSE response could not be parsed as JSON."
+        : detected > 0
+          ? "Historical IPO records detected successfully."
+          : "NSE responded, but no historical records were detected.",
   };
 }
 
@@ -240,7 +281,10 @@ async function authorize(request?: NextRequest) {
       return {
         authorized: false as const,
         response: jsonResponse(
-          { success: false, error: "Invalid request origin." },
+          {
+            success: false,
+            error: "Invalid request origin.",
+          },
           403
         ),
       };
@@ -269,12 +313,12 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const err = error as Error;
 
-    console.error("NSE IPO diagnostic failed:", err);
+    console.error("NSE historical IPO diagnostic:", err);
 
     return jsonResponse(
       {
         success: false,
-        mode: "READ_ONLY_DIAGNOSTIC",
+        mode: "READ_ONLY_HISTORICAL_DIAGNOSTIC",
         error: err.message,
         databaseWrites: 0,
       },
@@ -293,12 +337,12 @@ export async function GET() {
   } catch (error) {
     const err = error as Error;
 
-    console.error("NSE IPO diagnostic failed:", err);
+    console.error("NSE historical IPO diagnostic:", err);
 
     return jsonResponse(
       {
         success: false,
-        mode: "READ_ONLY_DIAGNOSTIC",
+        mode: "READ_ONLY_HISTORICAL_DIAGNOSTIC",
         error: err.message,
         databaseWrites: 0,
       },

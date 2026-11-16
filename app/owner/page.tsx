@@ -1,10 +1,10 @@
-
 import Link from "next/link";
 import { requireOwner } from "@/lib/require-owner";
 import StaffForm from "./staff-form";
 import IpoCollectorButton from "./ipo-collector-button";
 import NseIpoCollectorButton from "./nse-ipo-collector-button";
 import NseUpcomingIpoPreviewButton from "./nse-upcoming-ipo-preview-button";
+import IpoCalendarPreviewButton from "./ipo-calendar-preview-button";
 import NseCsvImport from "./nse-csv-import";
 import IpoLifecycleButton from "./ipo-lifecycle-button";
 import NseAttachmentParserButton from "./nse-attachment-parser-button";
@@ -56,6 +56,7 @@ export default async function OwnerDashboard() {
           <IpoCollectorButton />
           <NseIpoCollectorButton />
           <NseUpcomingIpoPreviewButton />
+          <IpoCalendarPreviewButton />
           <NseCsvImport />
           <IpoLifecycleButton />
           <NseAttachmentParserButton />

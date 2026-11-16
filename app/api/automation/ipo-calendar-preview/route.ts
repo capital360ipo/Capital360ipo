@@ -25,6 +25,12 @@ const SOURCES = [
   },
 ] as const;
 
+type LifecycleStatus =
+  | "UPCOMING"
+  | "OPEN"
+  | "HISTORICAL"
+  | "UNKNOWN";
+
 type IpoCandidate = {
   companyName: string;
   normalizedName: string;
@@ -33,6 +39,7 @@ type IpoCandidate = {
   closeDate: string | null;
   priceBand: string | null;
   issueSize: string | null;
+  lifecycleStatus: LifecycleStatus;
   sourceNames: string[];
   sourceUrls: string[];
   verificationStatus: "UNVERIFIED";
@@ -43,6 +50,35 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { "Cache-Control": "no-store" },
   });
+}
+
+function getIndiaTodayISO() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+
+  const get = (type: string) =>
+    parts.find((part) => part.type === type)?.value || "";
+
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+function getLifecycleStatus(
+  openDate: string | null,
+  closeDate: string | null
+): LifecycleStatus {
+  if (!openDate) return "UNKNOWN";
+
+  const today = getIndiaTodayISO();
+
+  if (today < openDate) return "UPCOMING";
+
+  if (closeDate && today > closeDate) return "HISTORICAL";
+
+  return "OPEN";
 }
 
 function cleanHtml(value: string): string {
@@ -86,16 +122,15 @@ function extractRows(html: string) {
     .map((row) => {
       const cells = row.match(/<t[dh]\b[^>]*>[\s\S]*?<\/t[dh]>/gi) || [];
 
-      return cells
-        .map((cell) => cleanHtml(cell))
-        .filter(Boolean);
+      return cells.map((cell) => cleanHtml(cell)).filter(Boolean);
     })
     .filter((cells) => cells.length >= 2)
-    .slice(0, 15);
+    .slice(0, 30);
 }
 
 function extractStructuredRows(html: string) {
   const tables = html.match(/<table\b[^>]*>[\s\S]*?<\/table>/gi) || [];
+
   const records: Array<{
     cells: string[];
     headers: string[];
@@ -106,12 +141,8 @@ function extractStructuredRows(html: string) {
     let headers: string[] = [];
 
     for (const row of rows) {
-      const cells =
-        row.match(/<t[dh]\b[^>]*>[\s\S]*?<\/t[dh]>/gi) || [];
-
-      const values = cells
-        .map((cell) => cleanHtml(cell))
-        .filter(Boolean);
+      const cells = row.match(/<t[dh]\b[^>]*>[\s\S]*?<\/t[dh]>/gi) || [];
+      const values = cells.map((cell) => cleanHtml(cell)).filter(Boolean);
 
       if (values.length < 2) continue;
 
@@ -124,10 +155,7 @@ function extractStructuredRows(html: string) {
         continue;
       }
 
-      records.push({
-        cells: values,
-        headers,
-      });
+      records.push({ cells: values, headers });
     }
   }
 
@@ -169,10 +197,7 @@ function parseDate(value: string | undefined): string | null {
 
 function parsePeriod(value: string | undefined) {
   if (!value) {
-    return {
-      openDate: null,
-      closeDate: null,
-    };
+    return { openDate: null, closeDate: null };
   }
 
   const parts = value.split(/\s+-\s+|\s+to\s+/i);
@@ -195,9 +220,22 @@ function cleanPriceBand(value: string | undefined) {
 
   const cleaned = value.trim();
 
-  if (/^[-–—]$/.test(cleaned) || /^₹?\s*0\s*-\s*0$/.test(cleaned)) {
+  if (
+    /^[-–—]$/.test(cleaned) ||
+    /^₹?\s*0\s*-\s*0$/.test(cleaned)
+  ) {
     return null;
   }
+
+  return cleaned;
+}
+
+function cleanIssueSize(value: string | undefined) {
+  if (!value) return null;
+
+  const cleaned = value.trim();
+
+  if (/^[-–—]$/.test(cleaned)) return null;
 
   return cleaned;
 }
@@ -250,6 +288,7 @@ function extractCandidates(
 
     const openValue = getHeaderValue(cells, headers, /open date/);
     const closeValue = getHeaderValue(cells, headers, /close date/);
+
     const periodValue = getHeaderValue(
       cells,
       headers,
@@ -265,8 +304,9 @@ function extractCandidates(
       getHeaderValue(cells, headers, /price band/)
     );
 
-    const issueSize =
-      getHeaderValue(cells, headers, /issue size/) || null;
+    const issueSize = cleanIssueSize(
+      getHeaderValue(cells, headers, /issue size/)
+    );
 
     const normalizedName = normalizeName(company);
 
@@ -280,6 +320,7 @@ function extractCandidates(
       closeDate,
       priceBand,
       issueSize,
+      lifecycleStatus: getLifecycleStatus(openDate, closeDate),
       sourceNames: [source.name],
       sourceUrls: [source.url],
       verificationStatus: "UNVERIFIED",
@@ -289,18 +330,57 @@ function extractCandidates(
   return candidates;
 }
 
+function datesAreCompatible(
+  first: IpoCandidate,
+  second: IpoCandidate
+) {
+  if (
+    first.openDate &&
+    second.openDate &&
+    first.openDate !== second.openDate
+  ) {
+    return false;
+  }
+
+  if (
+    first.closeDate &&
+    second.closeDate &&
+    first.closeDate !== second.closeDate
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function typesAreCompatible(
+  first: IpoCandidate,
+  second: IpoCandidate
+) {
+  return (
+    first.ipoType === "UNKNOWN" ||
+    second.ipoType === "UNKNOWN" ||
+    first.ipoType === second.ipoType
+  );
+}
+
 function mergeCandidates(candidates: IpoCandidate[]) {
-  const merged = new Map<string, IpoCandidate>();
+  const merged: IpoCandidate[] = [];
 
   for (const candidate of candidates) {
-    const existing = merged.get(candidate.normalizedName);
+    const existing = merged.find(
+      (item) =>
+        item.normalizedName === candidate.normalizedName &&
+        datesAreCompatible(item, candidate) &&
+        typesAreCompatible(item, candidate)
+    );
 
     if (!existing) {
-      merged.set(candidate.normalizedName, { ...candidate });
+      merged.push({ ...candidate });
       continue;
     }
 
-    if (existing.ipoType === "UNKNOWN" && candidate.ipoType !== "UNKNOWN") {
+    if (existing.ipoType === "UNKNOWN") {
       existing.ipoType = candidate.ipoType;
     }
 
@@ -308,6 +388,11 @@ function mergeCandidates(candidates: IpoCandidate[]) {
     existing.closeDate ||= candidate.closeDate;
     existing.priceBand ||= candidate.priceBand;
     existing.issueSize ||= candidate.issueSize;
+
+    existing.lifecycleStatus = getLifecycleStatus(
+      existing.openDate,
+      existing.closeDate
+    );
 
     existing.sourceNames = Array.from(
       new Set([...existing.sourceNames, ...candidate.sourceNames])
@@ -318,7 +403,7 @@ function mergeCandidates(candidates: IpoCandidate[]) {
     );
   }
 
-  return Array.from(merged.values()).slice(0, 100);
+  return merged.slice(0, 100);
 }
 
 async function inspectSource(source: (typeof SOURCES)[number]) {
@@ -366,6 +451,11 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
     const rows = extractRows(html);
     const candidates = extractCandidates(source, html);
 
+    const diagnostic =
+      rows.length === 0
+        ? "HTTP successful, but no HTML table rows detected. The page may use JavaScript rendering or changed markup."
+        : undefined;
+
     return {
       source: source.name,
       success: true,
@@ -375,6 +465,7 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
       detectedRows: rows.length,
       sampleRows: rows,
       candidates,
+      diagnostic,
       pageContainsUpcoming:
         /upcoming|public issue|ipo issues/i.test(cleanHtml(html)),
       message: "Read-only source inspection. No records saved.",
@@ -421,6 +512,7 @@ export async function POST(request: NextRequest) {
   return jsonResponse({
     success: true,
     mode: "READ_ONLY_NORMALIZED_IPO_DISCOVERY",
+    indiaToday: getIndiaTodayISO(),
     sourcesChecked: results.length,
     successfulSources: results.filter((item) => item.success).length,
     totalDetectedRows: results.reduce(

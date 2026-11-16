@@ -75,7 +75,6 @@ function getLifecycleStatus(
   const today = getIndiaTodayISO();
 
   if (today < openDate) return "UPCOMING";
-
   if (closeDate && today > closeDate) return "HISTORICAL";
 
   return "OPEN";
@@ -113,6 +112,71 @@ function cleanHtml(value: string): string {
     })
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function extractPageTitle(html: string): string | null {
+  const match = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+
+  if (!match) return null;
+
+  const title = cleanHtml(match[1]);
+
+  return title ? title.slice(0, 200) : null;
+}
+
+function detectPageCondition(html: string, rows: number) {
+  const text = cleanHtml(html).toLowerCase();
+
+  const blockedPatterns = [
+    /access denied/,
+    /request blocked/,
+    /captcha/,
+    /verify you are human/,
+    /cloudflare/,
+    /akamai/,
+    /just a moment/,
+    /temporarily unavailable/,
+  ];
+
+  if (blockedPatterns.some((pattern) => pattern.test(text))) {
+    return {
+      assessment: "POSSIBLE_ACCESS_BLOCK",
+      diagnostic:
+        "Response contains possible CAPTCHA, security challenge, or access-blocking text.",
+    };
+  }
+
+  if (rows === 0) {
+    const javascriptIndicators = [
+      /enable javascript/,
+      /javascript is required/,
+      /__next_data__/,
+      /id="root"/,
+      /id="app"/,
+      /webpack/,
+    ];
+
+    if (
+      javascriptIndicators.some((pattern) => pattern.test(html))
+    ) {
+      return {
+        assessment: "POSSIBLE_JAVASCRIPT_RENDERING",
+        diagnostic:
+          "No HTML table rows detected. Page contains indicators of JavaScript-based rendering.",
+      };
+    }
+
+    return {
+      assessment: "NO_TABLE_ROWS",
+      diagnostic:
+        "HTTP response received, but no HTML table rows detected. Markup may have changed or data may load dynamically.",
+    };
+  }
+
+  return {
+    assessment: "HTML_ROWS_DETECTED",
+    diagnostic: null,
+  };
 }
 
 function extractRows(html: string) {
@@ -422,14 +486,27 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
       },
     });
 
+    const finalUrl = response.url || source.url;
+    const contentType = response.headers.get("content-type");
+
     if (!response.ok) {
       return {
         source: source.name,
         success: false,
+        reachable: false,
+        usableData: false,
+        requestedUrl: source.url,
+        finalUrl,
+        pageTitle: null,
         httpStatus: response.status,
+        contentType,
+        htmlLength: 0,
         detectedRows: 0,
+        candidateCount: 0,
         sampleRows: [],
         candidates: [],
+        assessment: "HTTP_ERROR",
+        diagnostic: `Source returned HTTP ${response.status}.`,
         error: `HTTP ${response.status}`,
       };
     }
@@ -439,49 +516,79 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
     if (!html || html.length > 5 * 1024 * 1024) {
       return {
         source: source.name,
-        success: false,
+        success: true,
+        reachable: true,
+        usableData: false,
+        requestedUrl: source.url,
+        finalUrl,
+        pageTitle: extractPageTitle(html || ""),
         httpStatus: response.status,
+        contentType,
+        htmlLength: html?.length || 0,
         detectedRows: 0,
+        candidateCount: 0,
         sampleRows: [],
         candidates: [],
+        assessment: "EMPTY_OR_OVERSIZED_RESPONSE",
+        diagnostic: "Response was empty or exceeded the 5 MB inspection limit.",
         error: "Empty or oversized response",
       };
     }
 
     const rows = extractRows(html);
     const candidates = extractCandidates(source, html);
-
-    const diagnostic =
-      rows.length === 0
-        ? "HTTP successful, but no HTML table rows detected. The page may use JavaScript rendering or changed markup."
-        : undefined;
+    const pageCondition = detectPageCondition(html, rows.length);
 
     return {
       source: source.name,
       success: true,
+      reachable: true,
+      usableData: candidates.length > 0,
+      requestedUrl: source.url,
+      finalUrl,
+      pageTitle: extractPageTitle(html),
       httpStatus: response.status,
-      contentType: response.headers.get("content-type"),
+      contentType,
       htmlLength: html.length,
       detectedRows: rows.length,
+      candidateCount: candidates.length,
       sampleRows: rows,
       candidates,
-      diagnostic,
+      assessment: pageCondition.assessment,
+      diagnostic:
+        candidates.length > 0
+          ? "IPO candidate data extracted from the response."
+          : pageCondition.diagnostic,
       pageContainsUpcoming:
         /upcoming|public issue|ipo issues/i.test(cleanHtml(html)),
       message: "Read-only source inspection. No records saved.",
     };
   } catch (error) {
+    const err = error instanceof Error ? error : null;
+    const cause =
+      err?.cause instanceof Error ? err.cause : null;
+
     return {
       source: source.name,
       success: false,
+      reachable: false,
+      usableData: false,
+      requestedUrl: source.url,
+      finalUrl: null,
+      pageTitle: null,
       httpStatus: null,
+      contentType: null,
+      htmlLength: 0,
       detectedRows: 0,
+      candidateCount: 0,
       sampleRows: [],
       candidates: [],
-      error:
-        error instanceof Error
-          ? error.message
-          : "Unknown source error",
+      assessment: "FETCH_FAILED",
+      diagnostic: "The source could not be fetched. Check timeout, network, or source-side restrictions.",
+      errorName: err?.name || "UnknownError",
+      error: err?.message || "Unknown source error",
+      causeName: cause?.name || null,
+      causeMessage: cause?.message || null,
     };
   }
 }
@@ -509,23 +616,45 @@ export async function POST(request: NextRequest) {
   const allCandidates = results.flatMap((item) => item.candidates);
   const normalizedCandidates = mergeCandidates(allCandidates);
 
+  const reachableSources = results.filter(
+    (item) => item.reachable
+  ).length;
+
+  const usableSources = results.filter(
+    (item) => item.usableData
+  ).length;
+
   return jsonResponse({
     success: true,
     mode: "READ_ONLY_NORMALIZED_IPO_DISCOVERY",
     indiaToday: getIndiaTodayISO(),
+
     sourcesChecked: results.length,
-    successfulSources: results.filter((item) => item.success).length,
+
+    // HTTP response received, whether or not IPO data was extracted.
+    reachableSources,
+
+    // At least one IPO candidate extracted successfully.
+    usableSources,
+
+    // Kept for compatibility: means HTTP reachable.
+    successfulSources: reachableSources,
+
     totalDetectedRows: results.reduce(
       (total, item) => total + item.detectedRows,
       0
     ),
+
     rawCandidateCount: allCandidates.length,
     uniqueCandidateCount: normalizedCandidates.length,
     duplicateCount: allCandidates.length - normalizedCandidates.length,
+
     databaseWrites: 0,
     automaticPublication: false,
+
     normalizedCandidates,
     results,
+
     message:
       "IPO candidates extracted and normalized for review. No database records were changed.",
   });

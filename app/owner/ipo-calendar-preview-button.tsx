@@ -23,6 +23,9 @@ type SourceResult = {
   errorName?: string;
   causeName?: string | null;
   causeMessage?: string | null;
+
+  // New BSE page diagnostics
+  pageDiagnostics?: unknown;
 };
 
 type IpoCandidate = {
@@ -156,7 +159,10 @@ export default function IpoCalendarPreviewButton() {
                   ["Reachable Sources", result.reachableSources ?? result.successfulSources],
                   ["Usable Sources", result.usableSources],
                 ].map(([label, value]) => (
-                  <div key={String(label)} className="rounded-lg bg-slate-900 p-3">
+                  <div
+                    key={String(label)}
+                    className="rounded-lg bg-slate-900 p-3"
+                  >
                     <p className="text-xs text-slate-400">{label}</p>
                     <p className="mt-1 text-xl font-bold text-white">
                       {value ?? "N/A"}
@@ -272,6 +278,17 @@ export default function IpoCalendarPreviewButton() {
                     <p className="break-words text-red-400">
                       Cause: {item.causeName ?? "Unknown"} — {item.causeMessage}
                     </p>
+                  )}
+
+                  {item.pageDiagnostics != null && (
+                    <div className="mt-4 rounded-lg border border-cyan-500/30 bg-slate-950 p-3">
+                      <p className="font-semibold text-cyan-400">
+                        BSE JavaScript & API Reference Diagnostics
+                      </p>
+                      <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words text-xs text-slate-300">
+                        {JSON.stringify(item.pageDiagnostics, null, 2)}
+                      </pre>
+                    </div>
                   )}
 
                   {item.sampleRows?.length > 0 && (

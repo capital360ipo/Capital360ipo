@@ -262,6 +262,7 @@ export default function IPOPage() {
           .from("ipo_master")
           .select("*")
           .eq("id", id)
+          .eq("publication_status", "published")
           .maybeSingle();
 
         if (error) throw error;

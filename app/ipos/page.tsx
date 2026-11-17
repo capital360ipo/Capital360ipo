@@ -193,6 +193,7 @@ export default function IPOListPage() {
           .select(
             "id, company_name, price_band, open_date, close_date, listing_date, status, ipo_type, drhp_filed_date"
           )
+          .eq("publication_status", "published")
           .order("open_date", { ascending: true, nullsFirst: false });
 
         if (error) throw error;

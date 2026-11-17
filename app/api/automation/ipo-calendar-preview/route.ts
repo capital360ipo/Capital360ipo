@@ -126,8 +126,7 @@ function extractPageTitle(html: string): string | null {
 
 /**
  * Read-only HTML + first-party JavaScript diagnostics.
- *
- * Only BSE first-party HTTPS JavaScript files are inspected.
+ * Only exact BSE first-party HTTPS scripts are inspected.
  * Discovered API endpoints are never called.
  * No database writes are performed.
  */
@@ -244,7 +243,6 @@ async function inspectPageReferences(
           contextSnippets: [],
           relevantContextSnippets: [],
         });
-
         continue;
       }
 
@@ -265,7 +263,6 @@ async function inspectPageReferences(
           contextSnippets: [],
           relevantContextSnippets: [],
         });
-
         continue;
       }
 
@@ -283,7 +280,6 @@ async function inspectPageReferences(
           contextSnippets: [],
           relevantContextSnippets: [],
         });
-
         continue;
       }
 
@@ -348,7 +344,6 @@ async function inspectPageReferences(
         }
       }
 
-      // General network snippets retained for comparison.
       const keywordPattern =
         /fetch\s*\(|XMLHttpRequest|axios|\.get\s*\(|\.post\s*\(|baseURL|api\.bseindia\.com|\/api\/|\/ipo\//gi;
 
@@ -358,11 +353,7 @@ async function inspectPageReferences(
         (keywordMatch = keywordPattern.exec(scriptText)) !== null &&
         snippets.length < 12
       ) {
-        const start = Math.max(
-          0,
-          keywordMatch.index - 160
-        );
-
+        const start = Math.max(0, keywordMatch.index - 160);
         const end = Math.min(
           scriptText.length,
           keywordMatch.index + 280
@@ -373,20 +364,30 @@ async function inspectPageReferences(
           .replace(/\s+/g, " ")
           .trim();
 
-        if (snippet) {
-          snippets.push(snippet);
-        }
+        if (snippet) snippets.push(snippet);
       }
 
-      // Expanded diagnostic targets for BSE API configuration.
+      // Expanded BSE configuration diagnostic targets.
       const contextTargets = [
         {
           label: "BSE_Domain_APIUrl declaration",
-          pattern: /BSE_Domain_APIUrl\s*[:=]/gi,
+          pattern: /["']?BSE_Domain_APIUrl["']?\s*[:=]/gi,
         },
         {
-          label: "BSE_Domain_APIUrl",
+          label: "BSE_Domain_APIUrl all occurrences",
           pattern: /BSE_Domain_APIUrl/gi,
+        },
+        {
+          label: "BSE_Domain_APIUrl extended value context",
+          pattern: /BSE_Domain_APIUrl.{0,500}/gi,
+        },
+        {
+          label: "BSE API host configuration",
+          pattern: /api\.bseindia\.com.{0,500}/gi,
+        },
+        {
+          label: "BSE domain configuration",
+          pattern: /BSE_Domain_APIUrl.{0,100}(?:api\.bseindia|bseindia\.com)/gi,
         },
         {
           label: "fetchData() implementation",
@@ -436,13 +437,13 @@ async function inspectPageReferences(
 
         while (
           (match = target.pattern.exec(scriptText)) !== null &&
-          targetMatches < 8 &&
-          relevantContextSnippets.length < 30
+          targetMatches < 30 &&
+          relevantContextSnippets.length < 60
         ) {
           const start = Math.max(0, match.index - 600);
           const end = Math.min(
             scriptText.length,
-            match.index + 900
+            match.index + 1200
           );
 
           const context = scriptText
@@ -462,16 +463,14 @@ async function inspectPageReferences(
 
           const uniqueKey = `${target.label}:${start}:${end}`;
 
-          if (snippetSet.has(uniqueKey)) {
-            continue;
-          }
+          if (snippetSet.has(uniqueKey)) continue;
 
           snippetSet.add(uniqueKey);
 
           if (context) {
             relevantContextSnippets.push({
               matchTerm: target.label,
-              context: context.slice(0, 1500),
+              context: context.slice(0, 1800),
             });
 
             targetMatches++;
@@ -957,8 +956,6 @@ async function inspectSource(
       rows.length
     );
 
-    // BSE Mainboard only: inspect HTML and first-party JS references.
-    // Discovered API endpoints are not called.
     const pageDiagnostics =
       source.name === "BSE_MAINBOARD"
         ? await inspectPageReferences(html, finalUrl)

@@ -127,7 +127,7 @@ function extractPageTitle(html: string): string | null {
 /**
  * Read-only HTML + first-party JavaScript diagnostics.
  *
- * Only BSE first-party JavaScript files are inspected.
+ * Only BSE first-party HTTPS JavaScript files are inspected.
  * Discovered API endpoints are never called.
  * No database writes are performed.
  */
@@ -147,6 +147,10 @@ async function inspectPageReferences(
     possibleApiReferences: string[];
     requestIndicators: string[];
     contextSnippets: string[];
+    relevantContextSnippets: Array<{
+      matchTerm: string;
+      context: string;
+    }>;
     error?: string;
   }> = [];
 
@@ -214,7 +218,7 @@ async function inspectPageReferences(
     }
   });
 
-  // Limit the number of JavaScript files inspected.
+  // Scan a maximum of 10 trusted scripts.
   for (const scriptUrl of trustedScripts.slice(0, 10)) {
     try {
       const response = await fetch(scriptUrl, {
@@ -238,14 +242,13 @@ async function inspectPageReferences(
           possibleApiReferences: [],
           requestIndicators: [],
           contextSnippets: [],
+          relevantContextSnippets: [],
         });
 
         continue;
       }
 
       const finalScriptUrl = response.url || scriptUrl;
-
-      // Verify the final URL is still on the trusted BSE host.
       const finalParsedUrl = new URL(finalScriptUrl);
 
       if (
@@ -260,6 +263,7 @@ async function inspectPageReferences(
           possibleApiReferences: [],
           requestIndicators: [],
           contextSnippets: [],
+          relevantContextSnippets: [],
         });
 
         continue;
@@ -277,6 +281,7 @@ async function inspectPageReferences(
           possibleApiReferences: [],
           requestIndicators: [],
           contextSnippets: [],
+          relevantContextSnippets: [],
         });
 
         continue;
@@ -290,6 +295,11 @@ async function inspectPageReferences(
       const foundApis = new Set<string>();
       const foundIndicators = new Set<string>();
       const snippets: string[] = [];
+
+      const relevantContextSnippets: Array<{
+        matchTerm: string;
+        context: string;
+      }> = [];
 
       const scriptUrlRegex =
         /(?:https?:\/\/[^"'`\s<>]+|["'`]\/[^"'`\s<>]*?(?:api|ipo|issue|public)[^"'`\s<>]*["'`])/gi;
@@ -338,6 +348,7 @@ async function inspectPageReferences(
         }
       }
 
+      // General network snippets retained for comparison.
       const keywordPattern =
         /fetch\s*\(|XMLHttpRequest|axios|\.get\s*\(|\.post\s*\(|baseURL|api\.bseindia\.com|\/api\/|\/ipo\//gi;
 
@@ -367,6 +378,90 @@ async function inspectPageReferences(
         }
       }
 
+      // Targeted IPO-specific context extraction.
+      const contextTargets = [
+        {
+          label: "GetPublicIssue_par_updated",
+          pattern: /GetPublicIssue_par_updated/gi,
+        },
+        {
+          label: "IPOTrackerN",
+          pattern: /IPOTrackerN/gi,
+        },
+        {
+          label: "BSE_Domain_APIUrl",
+          pattern: /BSE_Domain_APIUrl/gi,
+        },
+        {
+          label: "M.url",
+          pattern: /\bM\.url\b/gi,
+        },
+        {
+          label: "getData()",
+          pattern: /getData\s*\(/gi,
+        },
+        {
+          label: "postData()",
+          pattern: /postData\s*\(/gi,
+        },
+      ];
+
+      const snippetSet = new Set<string>();
+
+      for (const target of contextTargets) {
+        let match: RegExpExecArray | null;
+        let targetMatches = 0;
+
+        // Each target has its own regex instance.
+        target.pattern.lastIndex = 0;
+
+        while (
+          (match = target.pattern.exec(scriptText)) !== null &&
+          targetMatches < 8 &&
+          relevantContextSnippets.length < 30
+        ) {
+          const start = Math.max(0, match.index - 600);
+          const end = Math.min(
+            scriptText.length,
+            match.index + 900
+          );
+
+          const context = scriptText
+            .slice(start, end)
+            .replace(/\s+/g, " ")
+            .trim();
+
+          // Generic getData/postData calls are useful only
+          // when the surrounding code relates to IPO endpoints.
+          if (
+            (target.label === "getData()" ||
+              target.label === "postData()") &&
+            !/IPO|PublicIssue|IPOTracker|BSE_Domain_APIUrl/i.test(
+              context
+            )
+          ) {
+            continue;
+          }
+
+          const uniqueKey = `${target.label}:${start}:${end}`;
+
+          if (snippetSet.has(uniqueKey)) {
+            continue;
+          }
+
+          snippetSet.add(uniqueKey);
+
+          if (context) {
+            relevantContextSnippets.push({
+              matchTerm: target.label,
+              context: context.slice(0, 1500),
+            });
+
+            targetMatches++;
+          }
+        }
+      }
+
       scriptScans.push({
         url: scriptUrl,
         status: "SCANNED",
@@ -375,6 +470,7 @@ async function inspectPageReferences(
         possibleApiReferences: Array.from(foundApis).slice(0, 60),
         requestIndicators: Array.from(foundIndicators),
         contextSnippets: snippets,
+        relevantContextSnippets,
       });
     } catch (error) {
       scriptScans.push({
@@ -385,6 +481,7 @@ async function inspectPageReferences(
         possibleApiReferences: [],
         requestIndicators: [],
         contextSnippets: [],
+        relevantContextSnippets: [],
         error:
           error instanceof Error
             ? error.message
@@ -952,7 +1049,6 @@ export async function POST(request: NextRequest) {
     reachableSources,
     usableSources,
 
-    // Compatibility alias: HTTP reachable count.
     successfulSources: reachableSources,
 
     totalDetectedRows: results.reduce(

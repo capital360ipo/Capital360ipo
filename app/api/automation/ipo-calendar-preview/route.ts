@@ -378,8 +378,32 @@ async function inspectPageReferences(
         }
       }
 
-      // Targeted IPO-specific context extraction.
+      // Expanded diagnostic targets for BSE API configuration.
       const contextTargets = [
+        {
+          label: "BSE_Domain_APIUrl declaration",
+          pattern: /BSE_Domain_APIUrl\s*[:=]/gi,
+        },
+        {
+          label: "BSE_Domain_APIUrl",
+          pattern: /BSE_Domain_APIUrl/gi,
+        },
+        {
+          label: "fetchData() implementation",
+          pattern: /fetchData\s*\([^)]*\)\s*\{/gi,
+        },
+        {
+          label: "CustomService.getData() implementation",
+          pattern: /getData\s*\([^)]*\)\s*\{/gi,
+        },
+        {
+          label: "HttpClient configuration",
+          pattern: /HttpClient|withCredentials|credentials\s*:/gi,
+        },
+        {
+          label: "HTTP headers",
+          pattern: /headers\s*[:=]|setHeaders|Authorization/gi,
+        },
         {
           label: "GetPublicIssue_par_updated",
           pattern: /GetPublicIssue_par_updated/gi,
@@ -387,10 +411,6 @@ async function inspectPageReferences(
         {
           label: "IPOTrackerN",
           pattern: /IPOTrackerN/gi,
-        },
-        {
-          label: "BSE_Domain_APIUrl",
-          pattern: /BSE_Domain_APIUrl/gi,
         },
         {
           label: "M.url",
@@ -412,7 +432,6 @@ async function inspectPageReferences(
         let match: RegExpExecArray | null;
         let targetMatches = 0;
 
-        // Each target has its own regex instance.
         target.pattern.lastIndex = 0;
 
         while (
@@ -431,8 +450,6 @@ async function inspectPageReferences(
             .replace(/\s+/g, " ")
             .trim();
 
-          // Generic getData/postData calls are useful only
-          // when the surrounding code relates to IPO endpoints.
           if (
             (target.label === "getData()" ||
               target.label === "postData()") &&

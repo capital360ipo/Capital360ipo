@@ -88,9 +88,30 @@ function cleanHtml(value: string): string {
     .replace(/&nbsp;|&#160;/gi, " ")
     .replace(/&amp;/gi, "&")
     .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;|&#x27;/gi, "'")
+    .replace(/&#39;|&apos;|&x27;/gi, "'")
+    .replace(/&#x27;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
+    .replace(/&#(x[0-9a-f]+|\d+);/gi, (match, code) => {
+      try {
+        const number = code.toLowerCase().startsWith("x")
+          ? parseInt(code.slice(1), 16)
+          : parseInt(code, 10);
+
+        if (
+          !Number.isFinite(number) ||
+          number < 0 ||
+          number > 0x10ffff ||
+          (number >= 0xd800 && number <= 0xdfff)
+        ) {
+          return match;
+        }
+
+        return String.fromCodePoint(number);
+      } catch {
+        return match;
+      }
+    })
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -104,14 +125,30 @@ function extractPageTitle(html: string): string | null {
 }
 
 /**
- * Read-only diagnostics.
- * This function only inspects the HTML already downloaded.
- * It does not call any discovered URL.
+ * Read-only HTML + first-party JavaScript diagnostics.
+ *
+ * Only BSE first-party JavaScript files are inspected.
+ * Discovered API endpoints are never called.
+ * No database writes are performed.
  */
-function inspectPageReferences(html: string, pageUrl: string) {
+async function inspectPageReferences(
+  html: string,
+  pageUrl: string
+) {
   const scriptSources = new Set<string>();
   const apiReferences = new Set<string>();
   const requestIndicators = new Set<string>();
+
+  const scriptScans: Array<{
+    url: string;
+    status: string;
+    httpStatus: number | null;
+    length: number;
+    possibleApiReferences: string[];
+    requestIndicators: string[];
+    contextSnippets: string[];
+    error?: string;
+  }> = [];
 
   const scriptRegex =
     /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
@@ -136,9 +173,7 @@ function inspectPageReferences(html: string, pageUrl: string) {
   while ((urlMatch = urlRegex.exec(html)) !== null) {
     const value = urlMatch[0].replace(/[),;]+$/, "");
 
-    if (
-      /api|ipo|issue|publicissue|public-issue/i.test(value)
-    ) {
+    if (/api|ipo|issue|publicissue|public-issue/i.test(value)) {
       try {
         apiReferences.add(
           new URL(value, pageUrl).toString()
@@ -149,7 +184,7 @@ function inspectPageReferences(html: string, pageUrl: string) {
     }
   }
 
-  const indicatorPatterns = [
+  const htmlIndicatorPatterns = [
     { pattern: /fetch\s*\(/gi, label: "fetch()" },
     { pattern: /\$\.ajax\s*\(/gi, label: "$.ajax()" },
     { pattern: /XMLHttpRequest/gi, label: "XMLHttpRequest" },
@@ -159,48 +194,217 @@ function inspectPageReferences(html: string, pageUrl: string) {
     { pattern: /application\/json/gi, label: "JSON data marker" },
   ];
 
-  for (const item of indicatorPatterns) {
+  for (const item of htmlIndicatorPatterns) {
     if (item.pattern.test(html)) {
       requestIndicators.add(item.label);
     }
   }
 
-  // Extract small, safe context snippets around relevant keywords.
-  const contextSnippets: string[] = [];
-  const keywordPattern =
-    /fetch\s*\(|\$\.ajax\s*\(|XMLHttpRequest|DataTable\s*\(|ajax\s*:|api\/|ipo\/|publicissue/gi;
+  // Only exact first-party BSE HTTPS scripts are allowed.
+  const trustedScripts = Array.from(scriptSources).filter((url) => {
+    try {
+      const parsed = new URL(url);
 
-  let keywordMatch: RegExpExecArray | null;
+      return (
+        parsed.protocol === "https:" &&
+        parsed.hostname === "www.bseindia.com"
+      );
+    } catch {
+      return false;
+    }
+  });
 
-  while (
-    (keywordMatch = keywordPattern.exec(html)) !== null &&
-    contextSnippets.length < 20
-  ) {
-    const start = Math.max(0, keywordMatch.index - 180);
-    const end = Math.min(
-      html.length,
-      keywordMatch.index + 300
-    );
+  // Limit the number of JavaScript files inspected.
+  for (const scriptUrl of trustedScripts.slice(0, 10)) {
+    try {
+      const response = await fetch(scriptUrl, {
+        method: "GET",
+        cache: "no-store",
+        redirect: "error",
+        signal: AbortSignal.timeout(12000),
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+          Accept: "application/javascript,text/javascript,*/*;q=0.8",
+        },
+      });
 
-    const snippet = html
-      .slice(start, end)
-      .replace(/\s+/g, " ")
-      .trim();
+      if (!response.ok) {
+        scriptScans.push({
+          url: scriptUrl,
+          status: "HTTP_ERROR",
+          httpStatus: response.status,
+          length: 0,
+          possibleApiReferences: [],
+          requestIndicators: [],
+          contextSnippets: [],
+        });
 
-    if (snippet) contextSnippets.push(snippet);
+        continue;
+      }
+
+      const finalScriptUrl = response.url || scriptUrl;
+
+      // Verify the final URL is still on the trusted BSE host.
+      const finalParsedUrl = new URL(finalScriptUrl);
+
+      if (
+        finalParsedUrl.protocol !== "https:" ||
+        finalParsedUrl.hostname !== "www.bseindia.com"
+      ) {
+        scriptScans.push({
+          url: scriptUrl,
+          status: "REDIRECT_OUTSIDE_TRUSTED_HOST",
+          httpStatus: response.status,
+          length: 0,
+          possibleApiReferences: [],
+          requestIndicators: [],
+          contextSnippets: [],
+        });
+
+        continue;
+      }
+
+      const contentType =
+        response.headers.get("content-type") || "";
+
+      if (!/javascript|ecmascript|text\/plain/i.test(contentType)) {
+        scriptScans.push({
+          url: scriptUrl,
+          status: "UNEXPECTED_CONTENT_TYPE",
+          httpStatus: response.status,
+          length: 0,
+          possibleApiReferences: [],
+          requestIndicators: [],
+          contextSnippets: [],
+        });
+
+        continue;
+      }
+
+      const scriptText = (await response.text()).slice(
+        0,
+        2 * 1024 * 1024
+      );
+
+      const foundApis = new Set<string>();
+      const foundIndicators = new Set<string>();
+      const snippets: string[] = [];
+
+      const scriptUrlRegex =
+        /(?:https?:\/\/[^"'`\s<>]+|["'`]\/[^"'`\s<>]*?(?:api|ipo|issue|public)[^"'`\s<>]*["'`])/gi;
+
+      let scriptUrlMatch: RegExpExecArray | null;
+
+      while (
+        (scriptUrlMatch = scriptUrlRegex.exec(scriptText)) !== null
+      ) {
+        const raw = scriptUrlMatch[0].replace(
+          /^["'`]|["'`]$/g,
+          ""
+        );
+
+        const value = raw.replace(/[),;]+$/, "");
+
+        try {
+          const resolved = new URL(
+            value,
+            finalScriptUrl
+          ).toString();
+
+          if (/api|ipo|issue|publicissue|public-issue/i.test(resolved)) {
+            foundApis.add(resolved);
+            apiReferences.add(resolved);
+          }
+        } catch {
+          // Ignore malformed references.
+        }
+      }
+
+      const scriptIndicators = [
+        { pattern: /fetch\s*\(/gi, label: "fetch()" },
+        { pattern: /XMLHttpRequest/gi, label: "XMLHttpRequest" },
+        { pattern: /axios/gi, label: "axios" },
+        { pattern: /\.get\s*\(/gi, label: ".get()" },
+        { pattern: /\.post\s*\(/gi, label: ".post()" },
+        { pattern: /baseURL/gi, label: "baseURL" },
+        { pattern: /api\.bseindia\.com/gi, label: "api.bseindia.com" },
+      ];
+
+      for (const item of scriptIndicators) {
+        if (item.pattern.test(scriptText)) {
+          foundIndicators.add(item.label);
+          requestIndicators.add(item.label);
+        }
+      }
+
+      const keywordPattern =
+        /fetch\s*\(|XMLHttpRequest|axios|\.get\s*\(|\.post\s*\(|baseURL|api\.bseindia\.com|\/api\/|\/ipo\//gi;
+
+      let keywordMatch: RegExpExecArray | null;
+
+      while (
+        (keywordMatch = keywordPattern.exec(scriptText)) !== null &&
+        snippets.length < 12
+      ) {
+        const start = Math.max(
+          0,
+          keywordMatch.index - 160
+        );
+
+        const end = Math.min(
+          scriptText.length,
+          keywordMatch.index + 280
+        );
+
+        const snippet = scriptText
+          .slice(start, end)
+          .replace(/\s+/g, " ")
+          .trim();
+
+        if (snippet) {
+          snippets.push(snippet);
+        }
+      }
+
+      scriptScans.push({
+        url: scriptUrl,
+        status: "SCANNED",
+        httpStatus: response.status,
+        length: scriptText.length,
+        possibleApiReferences: Array.from(foundApis).slice(0, 60),
+        requestIndicators: Array.from(foundIndicators),
+        contextSnippets: snippets,
+      });
+    } catch (error) {
+      scriptScans.push({
+        url: scriptUrl,
+        status: "FETCH_FAILED",
+        httpStatus: null,
+        length: 0,
+        possibleApiReferences: [],
+        requestIndicators: [],
+        contextSnippets: [],
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown script scan error",
+      });
+    }
   }
 
   return {
-    diagnosticType: "READ_ONLY_HTML_REFERENCE_SCAN",
+    diagnosticType: "READ_ONLY_HTML_AND_JS_REFERENCE_SCAN",
     pageUrl,
     scriptSourceCount: scriptSources.size,
     scriptSources: Array.from(scriptSources).slice(0, 40),
+    firstPartyScriptsScanned: scriptScans.length,
     possibleApiReferenceCount: apiReferences.size,
-    possibleApiReferences: Array.from(apiReferences).slice(0, 40),
+    possibleApiReferences: Array.from(apiReferences).slice(0, 60),
     requestIndicators: Array.from(requestIndicators),
-    contextSnippets,
+    scriptScans,
     note:
-      "These are references found in downloaded HTML only. No discovered endpoint was called or verified.",
+      "Only first-party BSE JavaScript files were inspected. Discovered API endpoints were not called or verified. No database writes were performed.",
   };
 }
 
@@ -248,7 +452,9 @@ function extractRows(html: string) {
       const cells =
         row.match(/<t[dh]\b[^>]*>[\s\S]*?<\/t[dh]>/gi) || [];
 
-      return cells.map((cell) => cleanHtml(cell)).filter(Boolean);
+      return cells
+        .map((cell) => cleanHtml(cell))
+        .filter(Boolean);
     })
     .filter((cells) => cells.length >= 2)
     .slice(0, 30);
@@ -631,16 +837,17 @@ async function inspectSource(
 
     const rows = extractRows(html);
     const candidates = extractCandidates(source, html);
+
     const pageCondition = detectPageCondition(
       html,
       rows.length
     );
 
-    // Only inspect BSE Mainboard HTML references.
-    // This does not call any discovered script or API URL.
+    // BSE Mainboard only: inspect HTML and first-party JS references.
+    // Discovered API endpoints are not called.
     const pageDiagnostics =
       source.name === "BSE_MAINBOARD"
-        ? inspectPageReferences(html, finalUrl)
+        ? await inspectPageReferences(html, finalUrl)
         : null;
 
     return {
@@ -765,6 +972,6 @@ export async function POST(request: NextRequest) {
     results,
 
     message:
-      "IPO candidates extracted and normalized for review. BSE Mainboard HTML references inspected in read-only mode. No database records were changed.",
+      "IPO candidates extracted and normalized for review. BSE Mainboard HTML and first-party JavaScript references inspected in read-only mode. No database records were changed.",
   });
 }

@@ -91,37 +91,117 @@ function cleanHtml(value: string): string {
     .replace(/&#39;|&apos;|&#x27;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
-    .replace(/&#(x[0-9a-f]+|\d+);/gi, (match, code) => {
-      try {
-        const number = code.toLowerCase().startsWith("x")
-          ? parseInt(code.slice(1), 16)
-          : parseInt(code, 10);
-
-        if (
-          !Number.isFinite(number) ||
-          number < 0 ||
-          number > 0x10ffff
-        ) {
-          return match;
-        }
-
-        return String.fromCodePoint(number);
-      } catch {
-        return match;
-      }
-    })
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function extractPageTitle(html: string): string | null {
   const match = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
-
   if (!match) return null;
 
   const title = cleanHtml(match[1]);
-
   return title ? title.slice(0, 200) : null;
+}
+
+/**
+ * Read-only diagnostics.
+ * This function only inspects the HTML already downloaded.
+ * It does not call any discovered URL.
+ */
+function inspectPageReferences(html: string, pageUrl: string) {
+  const scriptSources = new Set<string>();
+  const apiReferences = new Set<string>();
+  const requestIndicators = new Set<string>();
+
+  const scriptRegex =
+    /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+
+  let scriptMatch: RegExpExecArray | null;
+
+  while ((scriptMatch = scriptRegex.exec(html)) !== null) {
+    try {
+      scriptSources.add(
+        new URL(scriptMatch[1], pageUrl).toString()
+      );
+    } catch {
+      // Ignore malformed script URLs.
+    }
+  }
+
+  const urlRegex =
+    /(?:https?:\/\/[^"'`\s<>]+|\/[a-zA-Z0-9_./?=&%-]*(?:api|ipo|issue|public)[a-zA-Z0-9_./?=&%-]*)/gi;
+
+  let urlMatch: RegExpExecArray | null;
+
+  while ((urlMatch = urlRegex.exec(html)) !== null) {
+    const value = urlMatch[0].replace(/[),;]+$/, "");
+
+    if (
+      /api|ipo|issue|publicissue|public-issue/i.test(value)
+    ) {
+      try {
+        apiReferences.add(
+          new URL(value, pageUrl).toString()
+        );
+      } catch {
+        // Ignore malformed references.
+      }
+    }
+  }
+
+  const indicatorPatterns = [
+    { pattern: /fetch\s*\(/gi, label: "fetch()" },
+    { pattern: /\$\.ajax\s*\(/gi, label: "$.ajax()" },
+    { pattern: /XMLHttpRequest/gi, label: "XMLHttpRequest" },
+    { pattern: /DataTable\s*\(/gi, label: "DataTable()" },
+    { pattern: /ajax\s*:/gi, label: "ajax configuration" },
+    { pattern: /__NEXT_DATA__/gi, label: "Next.js data marker" },
+    { pattern: /application\/json/gi, label: "JSON data marker" },
+  ];
+
+  for (const item of indicatorPatterns) {
+    if (item.pattern.test(html)) {
+      requestIndicators.add(item.label);
+    }
+  }
+
+  // Extract small, safe context snippets around relevant keywords.
+  const contextSnippets: string[] = [];
+  const keywordPattern =
+    /fetch\s*\(|\$\.ajax\s*\(|XMLHttpRequest|DataTable\s*\(|ajax\s*:|api\/|ipo\/|publicissue/gi;
+
+  let keywordMatch: RegExpExecArray | null;
+
+  while (
+    (keywordMatch = keywordPattern.exec(html)) !== null &&
+    contextSnippets.length < 20
+  ) {
+    const start = Math.max(0, keywordMatch.index - 180);
+    const end = Math.min(
+      html.length,
+      keywordMatch.index + 300
+    );
+
+    const snippet = html
+      .slice(start, end)
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (snippet) contextSnippets.push(snippet);
+  }
+
+  return {
+    diagnosticType: "READ_ONLY_HTML_REFERENCE_SCAN",
+    pageUrl,
+    scriptSourceCount: scriptSources.size,
+    scriptSources: Array.from(scriptSources).slice(0, 40),
+    possibleApiReferenceCount: apiReferences.size,
+    possibleApiReferences: Array.from(apiReferences).slice(0, 40),
+    requestIndicators: Array.from(requestIndicators),
+    contextSnippets,
+    note:
+      "These are references found in downloaded HTML only. No discovered endpoint was called or verified.",
+  };
 }
 
 function detectPageCondition(html: string, rows: number) {
@@ -147,29 +227,10 @@ function detectPageCondition(html: string, rows: number) {
   }
 
   if (rows === 0) {
-    const javascriptIndicators = [
-      /enable javascript/,
-      /javascript is required/,
-      /__next_data__/,
-      /id="root"/,
-      /id="app"/,
-      /webpack/,
-    ];
-
-    if (
-      javascriptIndicators.some((pattern) => pattern.test(html))
-    ) {
-      return {
-        assessment: "POSSIBLE_JAVASCRIPT_RENDERING",
-        diagnostic:
-          "No HTML table rows detected. Page contains indicators of JavaScript-based rendering.",
-      };
-    }
-
     return {
       assessment: "NO_TABLE_ROWS",
       diagnostic:
-        "HTTP response received, but no HTML table rows detected. Markup may have changed or data may load dynamically.",
+        "HTTP response received, but no HTML table rows detected. Data may load dynamically or markup may have changed.",
     };
   }
 
@@ -184,7 +245,8 @@ function extractRows(html: string) {
 
   return rows
     .map((row) => {
-      const cells = row.match(/<t[dh]\b[^>]*>[\s\S]*?<\/t[dh]>/gi) || [];
+      const cells =
+        row.match(/<t[dh]\b[^>]*>[\s\S]*?<\/t[dh]>/gi) || [];
 
       return cells.map((cell) => cleanHtml(cell)).filter(Boolean);
     })
@@ -193,7 +255,8 @@ function extractRows(html: string) {
 }
 
 function extractStructuredRows(html: string) {
-  const tables = html.match(/<table\b[^>]*>[\s\S]*?<\/table>/gi) || [];
+  const tables =
+    html.match(/<table\b[^>]*>[\s\S]*?<\/table>/gi) || [];
 
   const records: Array<{
     cells: string[];
@@ -201,12 +264,18 @@ function extractStructuredRows(html: string) {
   }> = [];
 
   for (const table of tables) {
-    const rows = table.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+    const rows =
+      table.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+
     let headers: string[] = [];
 
     for (const row of rows) {
-      const cells = row.match(/<t[dh]\b[^>]*>[\s\S]*?<\/t[dh]>/gi) || [];
-      const values = cells.map((cell) => cleanHtml(cell)).filter(Boolean);
+      const cells =
+        row.match(/<t[dh]\b[^>]*>[\s\S]*?<\/t[dh]>/gi) || [];
+
+      const values = cells
+        .map((cell) => cleanHtml(cell))
+        .filter(Boolean);
 
       if (values.length < 2) continue;
 
@@ -309,7 +378,9 @@ function getHeaderValue(
   headers: string[],
   pattern: RegExp
 ) {
-  const index = headers.findIndex((header) => pattern.test(header));
+  const index = headers.findIndex((header) =>
+    pattern.test(header)
+  );
 
   return index >= 0 ? cells[index] : undefined;
 }
@@ -340,18 +411,30 @@ function extractCandidates(
     const { cells, headers } = record;
 
     const company =
-      getHeaderValue(cells, headers, /company|name/) || cells[0];
+      getHeaderValue(cells, headers, /company|name/) ||
+      cells[0];
 
     if (
       !company ||
-      /^(name|company|company name|ipo name)$/i.test(company.trim()) ||
+      /^(name|company|company name|ipo name)$/i.test(
+        company.trim()
+      ) ||
       company.length > 120
     ) {
       continue;
     }
 
-    const openValue = getHeaderValue(cells, headers, /open date/);
-    const closeValue = getHeaderValue(cells, headers, /close date/);
+    const openValue = getHeaderValue(
+      cells,
+      headers,
+      /open date/
+    );
+
+    const closeValue = getHeaderValue(
+      cells,
+      headers,
+      /close date/
+    );
 
     const periodValue = getHeaderValue(
       cells,
@@ -459,18 +542,26 @@ function mergeCandidates(candidates: IpoCandidate[]) {
     );
 
     existing.sourceNames = Array.from(
-      new Set([...existing.sourceNames, ...candidate.sourceNames])
+      new Set([
+        ...existing.sourceNames,
+        ...candidate.sourceNames,
+      ])
     );
 
     existing.sourceUrls = Array.from(
-      new Set([...existing.sourceUrls, ...candidate.sourceUrls])
+      new Set([
+        ...existing.sourceUrls,
+        ...candidate.sourceUrls,
+      ])
     );
   }
 
   return merged.slice(0, 100);
 }
 
-async function inspectSource(source: (typeof SOURCES)[number]) {
+async function inspectSource(
+  source: (typeof SOURCES)[number]
+) {
   try {
     const response = await fetch(source.url, {
       method: "GET",
@@ -508,6 +599,7 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
         assessment: "HTTP_ERROR",
         diagnostic: `Source returned HTTP ${response.status}.`,
         error: `HTTP ${response.status}`,
+        pageDiagnostics: null,
       };
     }
 
@@ -530,14 +622,26 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
         sampleRows: [],
         candidates: [],
         assessment: "EMPTY_OR_OVERSIZED_RESPONSE",
-        diagnostic: "Response was empty or exceeded the 5 MB inspection limit.",
+        diagnostic:
+          "Response was empty or exceeded the 5 MB inspection limit.",
         error: "Empty or oversized response",
+        pageDiagnostics: null,
       };
     }
 
     const rows = extractRows(html);
     const candidates = extractCandidates(source, html);
-    const pageCondition = detectPageCondition(html, rows.length);
+    const pageCondition = detectPageCondition(
+      html,
+      rows.length
+    );
+
+    // Only inspect BSE Mainboard HTML references.
+    // This does not call any discovered script or API URL.
+    const pageDiagnostics =
+      source.name === "BSE_MAINBOARD"
+        ? inspectPageReferences(html, finalUrl)
+        : null;
 
     return {
       source: source.name,
@@ -560,7 +664,10 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
           ? "IPO candidate data extracted from the response."
           : pageCondition.diagnostic,
       pageContainsUpcoming:
-        /upcoming|public issue|ipo issues/i.test(cleanHtml(html)),
+        /upcoming|public issue|ipo issues/i.test(
+          cleanHtml(html)
+        ),
+      pageDiagnostics,
       message: "Read-only source inspection. No records saved.",
     };
   } catch (error) {
@@ -584,11 +691,13 @@ async function inspectSource(source: (typeof SOURCES)[number]) {
       sampleRows: [],
       candidates: [],
       assessment: "FETCH_FAILED",
-      diagnostic: "The source could not be fetched. Check timeout, network, or source-side restrictions.",
+      diagnostic:
+        "The source could not be fetched. Check timeout, network, or source-side restrictions.",
       errorName: err?.name || "UnknownError",
       error: err?.message || "Unknown source error",
       causeName: cause?.name || null,
       causeMessage: cause?.message || null,
+      pageDiagnostics: null,
     };
   }
 }
@@ -613,7 +722,10 @@ export async function POST(request: NextRequest) {
     SOURCES.map((source) => inspectSource(source))
   );
 
-  const allCandidates = results.flatMap((item) => item.candidates);
+  const allCandidates = results.flatMap(
+    (item) => item.candidates
+  );
+
   const normalizedCandidates = mergeCandidates(allCandidates);
 
   const reachableSources = results.filter(
@@ -630,14 +742,10 @@ export async function POST(request: NextRequest) {
     indiaToday: getIndiaTodayISO(),
 
     sourcesChecked: results.length,
-
-    // HTTP response received, whether or not IPO data was extracted.
     reachableSources,
-
-    // At least one IPO candidate extracted successfully.
     usableSources,
 
-    // Kept for compatibility: means HTTP reachable.
+    // Compatibility alias: HTTP reachable count.
     successfulSources: reachableSources,
 
     totalDetectedRows: results.reduce(
@@ -647,7 +755,8 @@ export async function POST(request: NextRequest) {
 
     rawCandidateCount: allCandidates.length,
     uniqueCandidateCount: normalizedCandidates.length,
-    duplicateCount: allCandidates.length - normalizedCandidates.length,
+    duplicateCount:
+      allCandidates.length - normalizedCandidates.length,
 
     databaseWrites: 0,
     automaticPublication: false,
@@ -656,6 +765,6 @@ export async function POST(request: NextRequest) {
     results,
 
     message:
-      "IPO candidates extracted and normalized for review. No database records were changed.",
+      "IPO candidates extracted and normalized for review. BSE Mainboard HTML references inspected in read-only mode. No database records were changed.",
   });
 }

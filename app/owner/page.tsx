@@ -1,4 +1,3 @@
-
 import Link from "next/link";
 import { requireOwner } from "@/lib/require-owner";
 import StaffForm from "./staff-form";
@@ -14,6 +13,7 @@ import NseIpoTrackerPreview from "./nse-ipo-tracker-preview";
 import IpoSecurityMasterDiscoverButton from "./ipo-security-master-discover-button";
 import IpoListingHistoryImport from "./ipo-listing-history-import";
 import IpoListingHistoryReview from "./ipo-listing-history-review";
+import IpoMatchingButton from "./ipo-matching-button";
 
 export const dynamic = "force-dynamic";
 
@@ -66,6 +66,8 @@ export default async function OwnerDashboard() {
           <IpoSecurityMasterDiscoverButton />
           <IpoListingHistoryImport />
           <IpoListingHistoryReview />
+
+          <IpoMatchingButton />
         </section>
 
         <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">

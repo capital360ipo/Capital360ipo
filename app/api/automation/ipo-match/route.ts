@@ -14,20 +14,17 @@ export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 500;
 const MAX_RECORDS = 5000;
-const UPDATE_BATCH_SIZE = 500;
 
 type QueueRecord = {
   id: string;
   source_name: string;
   company_name: string;
   ipo_type: string | null;
-  drhp_filed_date: string | null;
-};
-
-type MatchingUpdate = {
-  id: string;
-  normalized_company_name: string;
-  confidence_score: number | null;
+  normalized_company_name: string | null;
+  candidate_id: string | null;
+  matched_ipo_id: string | null;
+  review_status: string | null;
+  verification_status: string | null;
 };
 
 export async function POST(request: NextRequest) {
@@ -75,7 +72,40 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Read queue in pages
+    // Default mode is always preview.
+    // Actual linking requires explicit confirmation.
+    let confirmLinking = false;
+
+    const bodyText = await request.text();
+
+    if (bodyText.trim()) {
+      let body: unknown;
+
+      try {
+        body = JSON.parse(bodyText);
+      } catch {
+        return NextResponse.json(
+          { success: false, error: "Invalid request body." },
+          { status: 400 }
+        );
+      }
+
+      if (
+        typeof body !== "object" ||
+        body === null ||
+        Array.isArray(body)
+      ) {
+        return NextResponse.json(
+          { success: false, error: "Invalid request body." },
+          { status: 400 }
+        );
+      }
+
+      confirmLinking =
+        (body as { confirmLinking?: unknown }).confirmLinking === true;
+    }
+
+    // Read queue in pages. No database writes in preview mode.
     const records: QueueRecord[] = [];
     let offset = 0;
 
@@ -83,7 +113,7 @@ export async function POST(request: NextRequest) {
       const { data, error } = await supabaseAdmin
         .from("ipo_import_queue")
         .select(
-          "id, source_name, company_name, ipo_type, drhp_filed_date"
+          "id, source_name, company_name, ipo_type, normalized_company_name, candidate_id, matched_ipo_id, review_status, verification_status"
         )
         .order("id", { ascending: true })
         .range(offset, offset + PAGE_SIZE - 1);
@@ -113,18 +143,57 @@ export async function POST(request: NextRequest) {
       offset += PAGE_SIZE;
     }
 
-    // Prepare normalized records once
+    // Explicit execution path.
+    // The database function performs the guarded linking.
+    if (confirmLinking) {
+      const { data, error } = await supabaseAdmin.rpc(
+        "link_ipo_queue_candidates"
+      );
+
+      if (error) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Candidate linking failed. No success is being reported.",
+          },
+          { status: 500 }
+        );
+      }
+
+      const { error: logError } = await supabaseAdmin
+        .from("automation_logs")
+        .insert({
+          task_name: "ipo_candidate_linking",
+          status: "success",
+          message: JSON.stringify(data),
+        });
+
+      return NextResponse.json(
+        {
+          success: true,
+          mode: "executed",
+          result: data,
+          audit_log_saved: !logError,
+          message:
+            "Candidate linking function completed. Verification and publication were not changed.",
+        },
+        {
+          status: 200,
+          headers: { "Cache-Control": "no-store" },
+        }
+      );
+    }
+
+    // Preview-only calculations
+    const bestScores = new Map<string, number>();
+    let candidatePairs = 0;
+    let typeMismatchPairs = 0;
+
     const prepared = records.map((record) => ({
       ...record,
       normalized: normalizeCompanyName(record.company_name),
     }));
 
-    const bestScores = new Map<string, number>();
-
-    let candidatePairs = 0;
-    let typeMismatchPairs = 0;
-
-    // Compare records from different sources
     for (let i = 0; i < prepared.length; i++) {
       const first = prepared[i];
 
@@ -133,9 +202,10 @@ export async function POST(request: NextRequest) {
       for (let j = i + 1; j < prepared.length; j++) {
         const second = prepared[j];
 
-        if (!second.normalized) continue;
-
-        if (first.source_name === second.source_name) {
+        if (
+          !second.normalized ||
+          first.source_name === second.source_name
+        ) {
           continue;
         }
 
@@ -153,8 +223,6 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        // Same company name but different IPO board/type
-        // is not treated as a confirmed event match.
         if (
           first.ipo_type &&
           second.ipo_type &&
@@ -178,67 +246,57 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Prepare safe metadata updates.
-    // Verification and publication statuses are deliberately untouched.
-    const updates: MatchingUpdate[] = prepared.map((record) => ({
-      id: record.id,
-      normalized_company_name: record.normalized,
-      confidence_score: bestScores.get(record.id) ?? null,
-    }));
+    const { count: totalCandidates, error: candidateError } =
+      await supabaseAdmin
+        .from("ipo_candidates")
+        .select("id", { count: "exact", head: true });
 
-    // Update records in batches.
-    for (
-      let i = 0;
-      i < updates.length;
-      i += UPDATE_BATCH_SIZE
-    ) {
-      const batch = updates.slice(i, i + UPDATE_BATCH_SIZE);
-
-      const { error: updateError } = await supabaseAdmin
-        .from("ipo_import_queue")
-        .upsert(batch, { onConflict: "id" });
-
-      if (updateError) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: "Matching metadata update failed. Check server logs.",
-          },
-          { status: 500 }
-        );
-      }
+    if (candidateError) {
+      return NextResponse.json(
+        { success: false, error: "Could not inspect candidate table." },
+        { status: 500 }
+      );
     }
 
-    const recordsWithCandidates = bestScores.size;
-
-    await supabaseAdmin.from("automation_logs").insert({
-      task_name: "ipo_matching",
-      status: "success",
+    const result = {
+      success: true,
+      mode: "preview",
+      processed: records.length,
+      candidatePairs,
+      recordsWithCandidates: bestScores.size,
+      typeMismatchPairs,
+      alreadyLinked: records.filter(
+        (record) => record.candidate_id !== null
+      ).length,
+      masterMatched: records.filter(
+        (record) => record.matched_ipo_id !== null
+      ).length,
+      pendingCandidateLinking: records.filter(
+        (record) =>
+          record.candidate_id === null &&
+          record.ipo_type !== null &&
+          record.normalized_company_name !== null &&
+          record.normalized_company_name.trim() !== "" &&
+          record.review_status !== "rejected" &&
+          record.verification_status !== "conflict"
+      ).length,
+      unknownType: records.filter(
+        (record) =>
+          record.ipo_type === null ||
+          record.normalized_company_name === null ||
+          !record.normalized_company_name.trim()
+      ).length,
+      totalCandidates: totalCandidates ?? 0,
+      verified: 0,
+      published: 0,
       message:
-        `Processed ${records.length} records. ` +
-        `${candidatePairs} cross-source candidate pairs found. ` +
-        `${recordsWithCandidates} records have matching candidates. ` +
-        `${typeMismatchPairs} type mismatches flagged. ` +
-        "No records were automatically verified or published.",
-    });
+        "Preview only. No database records were changed. Explicit confirmation is required for candidate linking.",
+    };
 
-    return NextResponse.json(
-      {
-        success: true,
-        processed: records.length,
-        candidatePairs,
-        recordsWithCandidates,
-        typeMismatchPairs,
-        verified: 0,
-        published: 0,
-        message:
-          "IPO name matching completed. Verification and publication were not changed.",
-      },
-      {
-        status: 200,
-        headers: { "Cache-Control": "no-store" },
-      }
-    );
+    return NextResponse.json(result, {
+      status: 200,
+      headers: { "Cache-Control": "no-store" },
+    });
   } catch {
     return NextResponse.json(
       {

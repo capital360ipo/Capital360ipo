@@ -2,30 +2,43 @@
 
 import { useState } from "react";
 
-type Result = {
-  success?: boolean;
-  mode?: "preview" | "executed";
+type PreviewResult = {
+  mode?: string;
+  readOnly?: boolean;
+  databaseWrites?: number;
   processed?: number;
+  sourceCounts?: Record<string, number>;
+  statusCounts?: Record<string, number>;
+  upcomingDrhpRecords?: number;
+  eligibleUpcomingRecords?: number;
+  missingOrUnknownTypeRecords?: number;
+  historicalExcluded?: number;
+  listedExcluded?: number;
+  otherStatusExcluded?: number;
   candidatePairs?: number;
   recordsWithCandidates?: number;
   typeMismatchPairs?: number;
   alreadyLinked?: number;
-  masterMatched?: number;
   pendingCandidateLinking?: number;
   unknownType?: number;
   totalCandidates?: number;
   verified?: number;
+  linked?: number;
   published?: number;
-  result?: {
-    candidate_linking?: {
-      candidates_created?: number;
-      existing_candidates_reused?: number;
-      queue_records_linked?: number;
-    };
-    evidence_linking?: {
-      evidence_linked?: number;
-    };
+  candidate_linking?: {
+    candidates_created?: number;
+    existing_candidates_reused?: number;
+    queue_records_linked?: number;
   };
+  evidence_linking?: {
+    evidence_linked?: number;
+  };
+};
+
+type Result = {
+  success?: boolean;
+  mode?: "preview" | "executed";
+  result?: PreviewResult;
   message?: string;
   error?: string;
 };
@@ -70,6 +83,8 @@ export default function IpoMatchingButton() {
     }
   }
 
+  const preview = result?.result;
+
   return (
     <section className="mt-6 rounded-2xl border border-cyan-500/30 bg-slate-900 p-5">
       <p className="text-sm font-semibold text-cyan-400">
@@ -81,8 +96,9 @@ export default function IpoMatchingButton() {
       </h2>
 
       <p className="mt-2 text-sm text-slate-400">
-        Automatically link eligible IPO queue records and
-        matching official source evidence to IPO candidates.
+        Matches upcoming IPO records across official sources.
+        Historical and already-listed IPOs are excluded from
+        upcoming matching.
       </p>
 
       <button
@@ -108,34 +124,99 @@ export default function IpoMatchingButton() {
                 Mode: {result.mode || "preview"}
               </p>
 
-              {result.mode === "preview" ? (
-                <div className="mt-3 space-y-2 text-slate-300">
-                  <p>Records processed: {result.processed ?? 0}</p>
-                  <p>Matching pairs: {result.candidatePairs ?? 0}</p>
-                  <p>Records with name matches: {result.recordsWithCandidates ?? 0}</p>
-                  <p>Type mismatches: {result.typeMismatchPairs ?? 0}</p>
-                  <p>Already linked: {result.alreadyLinked ?? 0}</p>
-                  <p>Pending candidate linking: {result.pendingCandidateLinking ?? 0}</p>
-                  <p>Unknown type: {result.unknownType ?? 0}</p>
-                  <p>Total candidates: {result.totalCandidates ?? 0}</p>
-                </div>
-              ) : (
+              {result.mode === "preview" && preview && (
+                <>
+                  <div className="mt-3 space-y-2 text-slate-300">
+                    <p>
+                      Total queue records processed:{" "}
+                      {preview.processed ?? 0}
+                    </p>
+                    <p>
+                      Upcoming DRHP records:{" "}
+                      {preview.upcomingDrhpRecords ?? 0}
+                    </p>
+                    <p>
+                      Eligible upcoming records:{" "}
+                      {preview.eligibleUpcomingRecords ?? 0}
+                    </p>
+                    <p>
+                      Missing or unknown IPO type:{" "}
+                      {preview.missingOrUnknownTypeRecords ?? 0}
+                    </p>
+                    <p>
+                      Historical records excluded:{" "}
+                      {preview.historicalExcluded ?? 0}
+                    </p>
+                    <p>
+                      Listed records excluded:{" "}
+                      {preview.listedExcluded ?? 0}
+                    </p>
+                    <p>
+                      Other status records excluded:{" "}
+                      {preview.otherStatusExcluded ?? 0}
+                    </p>
+                  </div>
+
+                  {preview.sourceCounts && (
+                    <div className="mt-4 border-t border-slate-700 pt-3">
+                      <p className="font-semibold text-cyan-300">
+                        Records by source
+                      </p>
+                      {Object.entries(preview.sourceCounts).map(
+                        ([source, count]) => (
+                          <p key={source} className="mt-1 text-slate-300">
+                            {source}: {count}
+                          </p>
+                        )
+                      )}
+                    </div>
+                  )}
+
+                  {preview.statusCounts && (
+                    <div className="mt-4 border-t border-slate-700 pt-3">
+                      <p className="font-semibold text-cyan-300">
+                        Records by status
+                      </p>
+                      {Object.entries(preview.statusCounts).map(
+                        ([status, count]) => (
+                          <p key={status} className="mt-1 text-slate-300">
+                            {status}: {count}
+                          </p>
+                        )
+                      )}
+                    </div>
+                  )}
+
+                  <div className="mt-4 border-t border-slate-700 pt-3 text-slate-300">
+                    <p>Database writes: {preview.databaseWrites ?? 0}</p>
+                    <p>Verified: {preview.verified ?? 0}</p>
+                    <p>Linked: {preview.linked ?? 0}</p>
+                    <p>Published: {preview.published ?? 0}</p>
+                  </div>
+
+                  <p className="mt-3 text-emerald-300">
+                    Preview is read-only. No database records were changed.
+                  </p>
+                </>
+              )}
+
+              {result.mode === "executed" && (
                 <div className="mt-3 space-y-2 text-slate-300">
                   <p>
                     Queue records linked:{" "}
-                    {result.result?.candidate_linking?.queue_records_linked ?? 0}
+                    {preview?.candidate_linking?.queue_records_linked ?? 0}
                   </p>
                   <p>
                     New candidates created:{" "}
-                    {result.result?.candidate_linking?.candidates_created ?? 0}
+                    {preview?.candidate_linking?.candidates_created ?? 0}
                   </p>
                   <p>
                     Existing candidates reused:{" "}
-                    {result.result?.candidate_linking?.existing_candidates_reused ?? 0}
+                    {preview?.candidate_linking?.existing_candidates_reused ?? 0}
                   </p>
                   <p>
                     Evidence records linked:{" "}
-                    {result.result?.evidence_linking?.evidence_linked ?? 0}
+                    {preview?.evidence_linking?.evidence_linked ?? 0}
                   </p>
                 </div>
               )}
@@ -144,15 +225,15 @@ export default function IpoMatchingButton() {
                 {result.message}
               </p>
 
-              {result.mode !== "executed" && (
+              {result.mode === "preview" && (
                 <div className="mt-5 rounded-lg border border-amber-500/40 bg-amber-950/30 p-4">
                   <p className="font-semibold text-amber-300">
                     Confirm Automatic Linking
                   </p>
 
                   <p className="mt-2 text-slate-300">
-                    Eligible queue and evidence records will be linked.
-                    Evidence verification and IPO publication will not change.
+                    This action links eligible queue and evidence records.
+                    It does not verify evidence or publish IPOs.
                   </p>
 
                   <button

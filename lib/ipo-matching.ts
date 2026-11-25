@@ -2,7 +2,7 @@
  * Capital360IPO — Safe Company Matching Engine
  *
  * Name similarity is only a candidate signal.
- * It never independently verifies or publishes an IPO.
+ * It never independently verifies, approves, links or publishes an IPO.
  */
 
 const GENERIC_WORDS = new Set([
@@ -10,27 +10,59 @@ const GENERIC_WORDS = new Set([
   "corporation", "corp", "company", "co", "india", "indian",
   "industries", "industry", "technology", "technologies",
   "solutions", "services", "international", "global", "ventures",
-  "enterprise", "enterprises", "holdings", "group",
+  "enterprise", "enterprises", "holdings", "holding", "group",
+  "corporate", "and",
 ]);
 
 export function normalizeCompanyName(name: string): string {
-  return name
+  return (name || "")
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/&/g, " and ")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\b(private limited|private ltd|pvt limited|pvt ltd|limited|ltd|incorporated|inc|corporation|corp|company|co)\b/gi, " ")
+    .replace(
+      /\b(private limited|private ltd|pvt limited|pvt ltd|limited|ltd|incorporated|inc|corporation|corp|company|co)\b/gi,
+      " "
+    )
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function getDistinctiveWords(name: string): Set<string> {
+export function normalizeIpoType(value: string | null): string {
+  const type = (value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+
+  if (
+    type === "main" ||
+    type === "mainboard" ||
+    type === "main board"
+  ) {
+    return "mainboard";
+  }
+
+  if (
+    type === "sme" ||
+    type === "small and medium enterprise" ||
+    type === "small medium enterprise"
+  ) {
+    return "sme";
+  }
+
+  return "";
+}
+
+export function getDistinctiveWords(name: string): Set<string> {
   return new Set(
     normalizeCompanyName(name)
       .split(" ")
       .filter(
-        (word) => word.length >= 3 && !GENERIC_WORDS.has(word)
+        (word) =>
+          word.length >= 3 &&
+          !GENERIC_WORDS.has(word)
       )
   );
 }
@@ -47,7 +79,7 @@ export function calculateCompanyNameSimilarity(
   const firstWords = getDistinctiveWords(first);
   const secondWords = getDistinctiveWords(second);
 
-  // Generic-only names cannot produce a match.
+  // Generic-only names cannot match.
   if (!firstWords.size || !secondWords.size) return 0;
 
   if (first === second) return 100;
@@ -63,7 +95,7 @@ export function calculateCompanyNameSimilarity(
 
 /**
  * Strong name signal only.
- * This is NOT proof of company identity.
+ * IPO type and lifecycle must be checked separately.
  */
 export function isStrongCompanyNameMatch(
   firstName: string,
@@ -87,5 +119,5 @@ export function isStrongCompanyNameMatch(
 
   if (!commonWords.length) return false;
 
-  return calculateCompanyNameSimilarity(first, second) >= 90;
+  return calculateCompanyNameSimilarity(firstName, secondName) >= 90;
 }

@@ -1,10 +1,13 @@
 import "server-only";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
+
 import {
   normalizeCompanyName,
+  normalizeIpoType,
   calculateCompanyNameSimilarity,
   isStrongCompanyNameMatch,
+  getDistinctiveWords,
 } from "@/lib/ipo-matching";
 
 const PAGE_SIZE = 500;
@@ -15,41 +18,18 @@ const MAX_NO_TOKEN_SAMPLES = 50;
 const TOP_SIMILARITY_LIMIT = 20;
 const STRONG_MATCH_THRESHOLD = 90;
 
-const GENERIC_WORDS = new Set([
-  "india",
-  "indian",
-  "industries",
-  "industry",
-  "technology",
-  "technologies",
-  "services",
-  "solutions",
-  "global",
-  "international",
-  "limited",
-  "ltd",
-  "private",
-  "pvt",
-  "company",
-  "corporation",
-  "corporate",
-  "group",
-  "holdings",
-  "holding",
-  "enterprises",
-  "enterprise",
-]);
-
 type QueueRecord = {
   id: string;
   source_name: string;
   company_name: string;
   ipo_type: string | null;
+  detected_status: string | null;
 };
 
 type PreparedRecord = QueueRecord & {
   normalized: string;
   tokens: Set<string>;
+  normalizedType: string;
 };
 
 type MatchPair = {
@@ -60,7 +40,7 @@ type MatchPair = {
   second_company: string;
   second_source: string;
   similarity_score: number;
-  issue_type: string | null;
+  issue_type: string;
 };
 
 type SimilarityPair = {
@@ -84,15 +64,7 @@ type DiagnosticPair = {
 };
 
 function getMatchTokens(name: string): Set<string> {
-  return new Set(
-    name
-      .split(/\s+/)
-      .filter(
-        (word) =>
-          word.length >= 3 &&
-          !GENERIC_WORDS.has(word)
-      )
-  );
+  return getDistinctiveWords(name);
 }
 
 function hasTokenOverlap(
@@ -104,22 +76,6 @@ function hasTokenOverlap(
   }
 
   return false;
-}
-
-function normalizeIssueType(value: string | null): string {
-  return (value || "").trim().toLowerCase();
-}
-
-function getIssueTypeStatus(
-  first: string | null,
-  second: string | null
-): "match" | "mismatch" | "missing" {
-  const firstType = normalizeIssueType(first);
-  const secondType = normalizeIssueType(second);
-
-  if (!firstType || !secondType) return "missing";
-
-  return firstType === secondType ? "match" : "mismatch";
 }
 
 function addTopSimilarity(
@@ -141,11 +97,13 @@ export async function runIpoMatching() {
   const records: QueueRecord[] = [];
   let offset = 0;
 
-  // READ ONLY: fetch records from the import queue.
+  // READ ONLY: fetch queue records.
   while (true) {
     const { data, error } = await supabaseAdmin
       .from("ipo_import_queue")
-      .select("id, source_name, company_name, ipo_type")
+      .select(
+        "id, source_name, company_name, ipo_type, detected_status"
+      )
       .order("id", { ascending: true })
       .range(offset, offset + PAGE_SIZE - 1);
 
@@ -154,6 +112,7 @@ export async function runIpoMatching() {
     }
 
     const page = (data || []) as QueueRecord[];
+
     records.push(...page);
 
     if (records.length > MAX_RECORDS) {
@@ -167,33 +126,87 @@ export async function runIpoMatching() {
     offset += PAGE_SIZE;
   }
 
-  const prepared: PreparedRecord[] = records.map((record) => {
-    const normalized = normalizeCompanyName(
-      record.company_name
-    );
+  const statusCounts: Record<string, number> = {};
 
-    return {
-      ...record,
-      normalized,
-      tokens: getMatchTokens(normalized),
-    };
-  });
+  for (const record of records) {
+    const status = (record.detected_status || "missing")
+      .trim()
+      .toLowerCase();
 
-  const sourceCounts = new Map<string, number>();
+    statusCounts[status] = (statusCounts[status] || 0) + 1;
+  }
 
-  for (const record of prepared) {
-    sourceCounts.set(
-      record.source_name,
-      (sourceCounts.get(record.source_name) || 0) + 1
-    );
+  // Only DRHP-filed IPOs enter Upcoming IPO matching.
+  const upcomingRecords = records.filter(
+    (record) =>
+      (record.detected_status || "").trim().toLowerCase() ===
+      "drhp_filed"
+  );
+
+  const historicalExcluded = records.filter(
+    (record) =>
+      (record.detected_status || "").trim().toLowerCase() ===
+      "nse_historical"
+  ).length;
+
+  const listedExcluded = records.filter(
+    (record) =>
+      (record.detected_status || "").trim().toLowerCase() ===
+      "listed"
+  ).length;
+
+  const otherStatusExcluded =
+    records.length -
+    upcomingRecords.length -
+    historicalExcluded -
+    listedExcluded;
+
+  const prepared: PreparedRecord[] = upcomingRecords.map(
+    (record) => {
+      const normalized = normalizeCompanyName(
+        record.company_name
+      );
+
+      return {
+        ...record,
+        normalized,
+        tokens: getMatchTokens(normalized),
+        normalizedType: normalizeIpoType(record.ipo_type),
+      };
+    }
+  );
+
+  // Records without a recognized IPO type are not compared.
+  const eligibleRecords = prepared.filter(
+    (record) =>
+      record.normalizedType === "mainboard" ||
+      record.normalizedType === "sme"
+  );
+
+  const missingOrUnknownTypeRecords = prepared.filter(
+    (record) =>
+      !record.normalizedType
+  );
+
+  const sourceCounts: Record<string, number> = {};
+  const eligibleSourceCounts: Record<string, number> = {};
+
+  for (const record of records) {
+    sourceCounts[record.source_name] =
+      (sourceCounts[record.source_name] || 0) + 1;
+  }
+
+  for (const record of eligibleRecords) {
+    eligibleSourceCounts[record.source_name] =
+      (eligibleSourceCounts[record.source_name] || 0) + 1;
   }
 
   const totalPossiblePairs =
-    (prepared.length * (prepared.length - 1)) / 2;
+    (eligibleRecords.length * (eligibleRecords.length - 1)) / 2;
 
   let sameSourcePairsExcluded = 0;
 
-  for (const count of sourceCounts.values()) {
+  for (const count of Object.values(eligibleSourceCounts)) {
     sameSourcePairsExcluded +=
       (count * (count - 1)) / 2;
   }
@@ -220,40 +233,33 @@ export async function runIpoMatching() {
   let noTokenOverlapPairs = 0;
   let candidatePairs = 0;
 
-  for (let i = 0; i < prepared.length; i++) {
-    const first = prepared[i];
+  for (let i = 0; i < eligibleRecords.length; i++) {
+    const first = eligibleRecords[i];
 
-    for (let j = i + 1; j < prepared.length; j++) {
-      const second = prepared[j];
+    for (let j = i + 1; j < eligibleRecords.length; j++) {
+      const second = eligibleRecords[j];
 
       if (first.source_name === second.source_name) {
         continue;
       }
 
       crossSourcePairsConsidered++;
-      comparisons++;
 
-      const issueTypeStatus = getIssueTypeStatus(
-        first.ipo_type,
-        second.ipo_type
-      );
-
-      if (issueTypeStatus === "mismatch") {
+      // Mainboard only compares with Mainboard.
+      // SME only compares with SME.
+      if (first.normalizedType !== second.normalizedType) {
         typeMismatchPairs++;
+        continue;
       }
 
-      if (issueTypeStatus === "missing") {
-        typeMissingPairs++;
-      }
+      comparisons++;
 
       const overlap = hasTokenOverlap(
         first.tokens,
         second.tokens
       );
 
-      if (overlap) {
-        tokenOverlapPairs++;
-      } else {
+      if (!overlap) {
         noTokenOverlapPairs++;
 
         if (
@@ -267,7 +273,12 @@ export async function runIpoMatching() {
             second_source: second.source_name,
           });
         }
+
+        // Do not display unrelated 0% pairs as possible matches.
+        continue;
       }
+
+      tokenOverlapPairs++;
 
       const score = calculateCompanyNameSimilarity(
         first.company_name,
@@ -292,15 +303,10 @@ export async function runIpoMatching() {
         strong_match: strongMatch,
         first_ipo_type: first.ipo_type,
         second_ipo_type: second.ipo_type,
-        issue_type_status: issueTypeStatus,
+        issue_type_status: "match",
       });
 
-      // Potential matches are reported only when issue types
-      // do not conflict and the existing strong-match rule passes.
-      if (
-        issueTypeStatus === "mismatch" ||
-        !strongMatch
-      ) {
+      if (!strongMatch || score < STRONG_MATCH_THRESHOLD) {
         continue;
       }
 
@@ -325,20 +331,30 @@ export async function runIpoMatching() {
           second_company: second.company_name,
           second_source: second.source_name,
           similarity_score: score,
-          issue_type: first.ipo_type || second.ipo_type,
+          issue_type: first.normalizedType,
         });
       }
     }
   }
 
-  // READ ONLY: no database writes.
+  // READ ONLY: this function does not update any database records.
   return {
     mode: "dry_run",
     readOnly: true,
     databaseWrites: 0,
 
     processed: records.length,
-    sourceCounts: Object.fromEntries(sourceCounts),
+    sourceCounts,
+    statusCounts,
+
+    upcomingDrhpRecords: upcomingRecords.length,
+    eligibleUpcomingRecords: eligibleRecords.length,
+    missingOrUnknownTypeRecords:
+      missingOrUnknownTypeRecords.length,
+
+    historicalExcluded,
+    listedExcluded,
+    otherStatusExcluded,
 
     totalPossiblePairs,
     sameSourcePairsExcluded,
@@ -348,6 +364,7 @@ export async function runIpoMatching() {
     comparisons,
     typeMismatchPairs,
     typeMissingPairs,
+
     tokenOverlapPairs,
     noTokenOverlapPairs,
 

@@ -1,8 +1,9 @@
+
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { requireApiRole } from "@/lib/require-api-role";
 import {
   normalizeCompanyName,
   calculateCompanyNameSimilarity,
@@ -29,7 +30,6 @@ type QueueRecord = {
 
 export async function POST(request: NextRequest) {
   try {
-    // Same-origin protection
     const origin = request.headers.get("origin");
     const requestOrigin = new URL(request.url).origin;
 
@@ -40,42 +40,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Owner/Admin authentication
-    const supabase = await createSupabaseServerClient();
+    const auth = await requireApiRole(["owner", "admin"]);
 
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Authentication required." },
-        { status: 401 }
-      );
+    if (!auth.authorized) {
+      return auth.response;
     }
 
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .maybeSingle();
-
-    if (
-      profileError ||
-      !profile ||
-      !["owner", "admin"].includes(profile.role)
-    ) {
-      return NextResponse.json(
-        { success: false, error: "Owner/Admin access required." },
-        { status: 403 }
-      );
-    }
-
-    // Default mode is always preview.
-    // Actual linking requires explicit confirmation.
     let confirmLinking = false;
-
     const bodyText = await request.text();
 
     if (bodyText.trim()) {
@@ -105,7 +76,6 @@ export async function POST(request: NextRequest) {
         (body as { confirmLinking?: unknown }).confirmLinking === true;
     }
 
-    // Read queue in pages. No database writes in preview mode.
     const records: QueueRecord[] = [];
     let offset = 0;
 
@@ -139,22 +109,41 @@ export async function POST(request: NextRequest) {
       }
 
       if (page.length < PAGE_SIZE) break;
-
       offset += PAGE_SIZE;
     }
 
-    // Explicit execution path.
-    // The database function performs the guarded linking.
     if (confirmLinking) {
-      const { data, error } = await supabaseAdmin.rpc(
-        "link_ipo_queue_candidates"
-      );
+      const { data: candidateResult, error: candidateError } =
+        await supabaseAdmin.rpc("link_ipo_queue_candidates");
 
-      if (error) {
+      if (candidateError) {
         return NextResponse.json(
           {
             success: false,
-            error: "Candidate linking failed. No success is being reported.",
+            error: "Candidate linking failed.",
+          },
+          { status: 500 }
+        );
+      }
+
+      const { data: evidenceResult, error: evidenceError } =
+        await supabaseAdmin.rpc(
+          "link_ipo_source_evidence_candidates"
+        );
+
+      if (evidenceError) {
+        await supabaseAdmin.from("automation_logs").insert({
+          task_name: "ipo_evidence_candidate_linking",
+          status: "error",
+          message: evidenceError.message,
+        });
+
+        return NextResponse.json(
+          {
+            success: false,
+            candidate_linking: candidateResult,
+            error:
+              "Candidate linking completed, but evidence linking failed. Check the database before retrying.",
           },
           { status: 500 }
         );
@@ -163,19 +152,25 @@ export async function POST(request: NextRequest) {
       const { error: logError } = await supabaseAdmin
         .from("automation_logs")
         .insert({
-          task_name: "ipo_candidate_linking",
+          task_name: "ipo_candidate_and_evidence_linking",
           status: "success",
-          message: JSON.stringify(data),
+          message: JSON.stringify({
+            candidate_linking: candidateResult,
+            evidence_linking: evidenceResult,
+          }),
         });
 
       return NextResponse.json(
         {
           success: true,
           mode: "executed",
-          result: data,
+          result: {
+            candidate_linking: candidateResult,
+            evidence_linking: evidenceResult,
+          },
           audit_log_saved: !logError,
           message:
-            "Candidate linking function completed. Verification and publication were not changed.",
+            "Candidate and eligible evidence linking completed. Evidence verification and IPO publication were not changed.",
         },
         {
           status: 200,
@@ -184,7 +179,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Preview-only calculations
     const bestScores = new Map<string, number>();
     let candidatePairs = 0;
     let typeMismatchPairs = 0;
@@ -258,46 +252,49 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = {
-      success: true,
-      mode: "preview",
-      processed: records.length,
-      candidatePairs,
-      recordsWithCandidates: bestScores.size,
-      typeMismatchPairs,
-      alreadyLinked: records.filter(
-        (record) => record.candidate_id !== null
-      ).length,
-      masterMatched: records.filter(
-        (record) => record.matched_ipo_id !== null
-      ).length,
-      pendingCandidateLinking: records.filter(
-        (record) =>
-          record.candidate_id === null &&
-          record.ipo_type !== null &&
-          record.normalized_company_name !== null &&
-          record.normalized_company_name.trim() !== "" &&
-          record.review_status !== "rejected" &&
-          record.verification_status !== "conflict"
-      ).length,
-      unknownType: records.filter(
-        (record) =>
-          record.ipo_type === null ||
-          record.normalized_company_name === null ||
-          !record.normalized_company_name.trim()
-      ).length,
-      totalCandidates: totalCandidates ?? 0,
-      verified: 0,
-      published: 0,
-      message:
-        "Preview only. No database records were changed. Explicit confirmation is required for candidate linking.",
-    };
+    return NextResponse.json(
+      {
+        success: true,
+        mode: "preview",
+        processed: records.length,
+        candidatePairs,
+        recordsWithCandidates: bestScores.size,
+        typeMismatchPairs,
+        alreadyLinked: records.filter(
+          (record) => record.candidate_id !== null
+        ).length,
+        masterMatched: records.filter(
+          (record) => record.matched_ipo_id !== null
+        ).length,
+        pendingCandidateLinking: records.filter(
+          (record) =>
+            record.candidate_id === null &&
+            record.ipo_type !== null &&
+            record.normalized_company_name !== null &&
+            record.normalized_company_name.trim() !== "" &&
+            record.review_status !== "rejected" &&
+            record.verification_status !== "conflict"
+        ).length,
+        unknownType: records.filter(
+          (record) =>
+            record.ipo_type === null ||
+            record.normalized_company_name === null ||
+            !record.normalized_company_name.trim()
+        ).length,
+        totalCandidates: totalCandidates ?? 0,
+        verified: 0,
+        published: 0,
+        message:
+          "Preview only. No database records were changed.",
+      },
+      {
+        status: 200,
+        headers: { "Cache-Control": "no-store" },
+      }
+    );
+  } catch (error) {
+    console.error("IPO matching failed:", error);
 
-    return NextResponse.json(result, {
-      status: 200,
-      headers: { "Cache-Control": "no-store" },
-    });
-  } catch {
     return NextResponse.json(
       {
         success: false,

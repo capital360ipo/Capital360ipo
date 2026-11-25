@@ -1,4 +1,3 @@
-
 import "server-only";
 
 import { createHash } from "crypto";
@@ -45,6 +44,13 @@ type DocumentResult = {
   status: string;
   signals: string[];
   pdfHash: string | null;
+};
+
+type AutomaticLinkingResult = {
+  success: boolean;
+  candidateLinking: unknown;
+  evidenceLinking: unknown;
+  error: string | null;
 };
 
 function jsonResponse(body: unknown, status = 200) {
@@ -227,7 +233,6 @@ function extractPdfLinks(html: string, baseUrl: string): string[] {
   for (const link of links) {
     try {
       const rawHref = link[1].replace(/&amp;/gi, "&").trim();
-
       const url = new URL(rawHref, baseUrl);
 
       if (!isValidSebiPdfUrl(url)) continue;
@@ -561,6 +566,57 @@ async function writeLog(
   }
 }
 
+async function runAutomaticLinking(): Promise<AutomaticLinkingResult> {
+  const result: AutomaticLinkingResult = {
+    success: false,
+    candidateLinking: null,
+    evidenceLinking: null,
+    error: null,
+  };
+
+  try {
+    const candidateResult = await supabaseAdmin.rpc(
+      "link_ipo_queue_candidates"
+    );
+
+    if (candidateResult.error) {
+      throw new Error(
+        `Candidate linking failed: ${candidateResult.error.message}`
+      );
+    }
+
+    result.candidateLinking = candidateResult.data;
+
+    const evidenceResult = await supabaseAdmin.rpc(
+      "link_ipo_source_evidence_candidates"
+    );
+
+    if (evidenceResult.error) {
+      throw new Error(
+        `Evidence linking failed: ${evidenceResult.error.message}`
+      );
+    }
+
+    result.evidenceLinking = evidenceResult.data;
+    result.success = true;
+  } catch (error) {
+    result.error =
+      error instanceof Error
+        ? error.message
+        : "Unknown automatic linking error";
+  }
+
+  await writeLog(
+    "SEBI Automatic Candidate Evidence Linking",
+    result.success ? "success" : "failed",
+    result.success
+      ? "Automatic candidate and eligible evidence linking completed. Verification and publication unchanged."
+      : result.error || "Automatic linking failed."
+  );
+
+  return result;
+}
+
 async function collectIpos() {
   try {
     const response = await fetch(SEBI_URL, {
@@ -586,7 +642,6 @@ async function collectIpos() {
     }
 
     const rows = html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
-
     const filings = new Map<string, Filing>();
 
     for (const row of rows) {
@@ -803,6 +858,10 @@ async function collectIpos() {
       }
     }
 
+    // Automatically link eligible queue records and evidence.
+    // This does not verify evidence or publish IPO records.
+    const automaticLinking = await runAutomaticLinking();
+
     const collectionMessage =
       `Detected: ${detected}, Inserted: ${inserted}, ` +
       `Duplicates: ${duplicates}, Evidence inserted: ${evidenceInserted}, ` +
@@ -836,9 +895,12 @@ async function collectIpos() {
       collectionMessage
     );
 
+    const overallSuccess =
+      automaticLinking.success && !matchingError;
+
     return jsonResponse({
       success: true,
-      status: matchingError ? "partial_success" : "success",
+      status: overallSuccess ? "success" : "partial_success",
       collection: {
         success: true,
         detected,
@@ -854,6 +916,7 @@ async function collectIpos() {
         documentStatusCounts,
         message: collectionMessage,
       },
+      automaticLinking,
       matching: {
         success: !matchingError,
         status: matchingError ? "failed" : "completed",

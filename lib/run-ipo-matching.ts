@@ -56,6 +56,7 @@ type SimilarityPair = {
   second_ipo_type: string | null;
   issue_type_status: "match" | "mismatch";
   match_scope: "cross_source" | "same_source";
+  token_overlap: boolean;
 };
 
 type DiagnosticPair = {
@@ -63,6 +64,7 @@ type DiagnosticPair = {
   first_source: string;
   second_company: string;
   second_source: string;
+  similarity_score: number;
   match_scope: "cross_source" | "same_source";
 };
 
@@ -139,7 +141,6 @@ export async function runIpoMatching() {
     statusCounts[status] = (statusCounts[status] || 0) + 1;
   }
 
-  // Only DRHP-filed IPOs enter Upcoming matching.
   const upcomingRecords = records.filter(
     (record) =>
       (record.detected_status || "").trim().toLowerCase() ===
@@ -179,7 +180,6 @@ export async function runIpoMatching() {
     }
   );
 
-  // Missing or unknown IPO types are excluded from comparisons.
   const eligibleRecords = prepared.filter(
     (record) =>
       record.normalizedType === "mainboard" ||
@@ -222,7 +222,7 @@ export async function runIpoMatching() {
 
   let comparisons = 0;
   let typeMismatchPairs = 0;
-  let typeMissingPairs = missingOrUnknownTypeRecords.length;
+  const typeMissingPairs = missingOrUnknownTypeRecords.length;
   let tokenOverlapPairs = 0;
   let noTokenOverlapPairs = 0;
 
@@ -247,8 +247,6 @@ export async function runIpoMatching() {
         crossSourcePairsConsidered++;
       }
 
-      // Mainboard compares only with Mainboard.
-      // SME compares only with SME.
       if (first.normalizedType !== second.normalizedType) {
         typeMismatchPairs++;
         continue;
@@ -261,27 +259,13 @@ export async function runIpoMatching() {
         second.tokens
       );
 
-      if (!overlap) {
+      if (overlap) {
+        tokenOverlapPairs++;
+      } else {
         noTokenOverlapPairs++;
-
-        if (
-          sampleNoTokenOverlapPairs.length <
-          MAX_NO_TOKEN_SAMPLES
-        ) {
-          sampleNoTokenOverlapPairs.push({
-            first_company: first.company_name,
-            first_source: first.source_name,
-            second_company: second.company_name,
-            second_source: second.source_name,
-            match_scope: matchScope,
-          });
-        }
-
-        continue;
       }
 
-      tokenOverlapPairs++;
-
+      // IMPORTANT: Calculate similarity even without token overlap.
       const score = calculateCompanyNameSimilarity(
         first.company_name,
         second.company_name
@@ -307,7 +291,19 @@ export async function runIpoMatching() {
         second_ipo_type: second.ipo_type,
         issue_type_status: "match",
         match_scope: matchScope,
+        token_overlap: overlap,
       });
+
+      if (!overlap && sampleNoTokenOverlapPairs.length < MAX_NO_TOKEN_SAMPLES) {
+        sampleNoTokenOverlapPairs.push({
+          first_company: first.company_name,
+          first_source: first.source_name,
+          second_company: second.company_name,
+          second_source: second.source_name,
+          similarity_score: score,
+          match_scope: matchScope,
+        });
+      }
 
       if (!strongMatch || score < STRONG_MATCH_THRESHOLD) {
         continue;

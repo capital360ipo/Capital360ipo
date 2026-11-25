@@ -16,6 +16,16 @@ type Result = {
   totalCandidates?: number;
   verified?: number;
   published?: number;
+  result?: {
+    candidate_linking?: {
+      candidates_created?: number;
+      existing_candidates_reused?: number;
+      queue_records_linked?: number;
+    };
+    evidence_linking?: {
+      evidence_linked?: number;
+    };
+  };
   message?: string;
   error?: string;
 };
@@ -71,8 +81,8 @@ export default function IpoMatchingButton() {
       </h2>
 
       <p className="mt-2 text-sm text-slate-400">
-        Match IPO records across official sources and link eligible
-        records to IPO candidates.
+        Automatically link eligible IPO queue records and
+        matching official source evidence to IPO candidates.
       </p>
 
       <button
@@ -90,54 +100,71 @@ export default function IpoMatchingButton() {
             <>
               <p className="font-semibold text-emerald-400">
                 {result.mode === "executed"
-                  ? "Candidate Linking completed successfully"
-                  : "Preview completed successfully"}
+                  ? "Linking completed"
+                  : "Preview completed"}
               </p>
 
               <p className="mt-2 text-cyan-300">
                 Mode: {result.mode || "preview"}
               </p>
 
-              <div className="mt-3 space-y-2 text-slate-300">
-                <p>Records processed: {result.processed ?? 0}</p>
-                <p>Cross-source matching pairs: {result.candidatePairs ?? 0}</p>
-                <p>Records with name matches: {result.recordsWithCandidates ?? 0}</p>
-                <p>IPO type mismatches: {result.typeMismatchPairs ?? 0}</p>
-                <p>Already linked records: {result.alreadyLinked ?? 0}</p>
-                <p>Master matched records: {result.masterMatched ?? 0}</p>
-                <p>Pending candidate linking: {result.pendingCandidateLinking ?? 0}</p>
-                <p>Unknown type records: {result.unknownType ?? 0}</p>
-                <p>Total existing candidates: {result.totalCandidates ?? 0}</p>
-                <p>Verified: {result.verified ?? 0}</p>
-                <p>Published: {result.published ?? 0}</p>
-              </div>
+              {result.mode === "preview" ? (
+                <div className="mt-3 space-y-2 text-slate-300">
+                  <p>Records processed: {result.processed ?? 0}</p>
+                  <p>Matching pairs: {result.candidatePairs ?? 0}</p>
+                  <p>Records with name matches: {result.recordsWithCandidates ?? 0}</p>
+                  <p>Type mismatches: {result.typeMismatchPairs ?? 0}</p>
+                  <p>Already linked: {result.alreadyLinked ?? 0}</p>
+                  <p>Pending candidate linking: {result.pendingCandidateLinking ?? 0}</p>
+                  <p>Unknown type: {result.unknownType ?? 0}</p>
+                  <p>Total candidates: {result.totalCandidates ?? 0}</p>
+                </div>
+              ) : (
+                <div className="mt-3 space-y-2 text-slate-300">
+                  <p>
+                    Queue records linked:{" "}
+                    {result.result?.candidate_linking?.queue_records_linked ?? 0}
+                  </p>
+                  <p>
+                    New candidates created:{" "}
+                    {result.result?.candidate_linking?.candidates_created ?? 0}
+                  </p>
+                  <p>
+                    Existing candidates reused:{" "}
+                    {result.result?.candidate_linking?.existing_candidates_reused ?? 0}
+                  </p>
+                  <p>
+                    Evidence records linked:{" "}
+                    {result.result?.evidence_linking?.evidence_linked ?? 0}
+                  </p>
+                </div>
+              )}
 
               <p className="mt-3 text-slate-400">
                 {result.message}
               </p>
 
-              {result.mode !== "executed" &&
-                (result.pendingCandidateLinking ?? 0) > 0 && (
-                  <div className="mt-5 rounded-lg border border-amber-500/40 bg-amber-950/30 p-4">
-                    <p className="font-semibold text-amber-300">
-                      Confirm Candidate Linking
-                    </p>
+              {result.mode !== "executed" && (
+                <div className="mt-5 rounded-lg border border-amber-500/40 bg-amber-950/30 p-4">
+                  <p className="font-semibold text-amber-300">
+                    Confirm Automatic Linking
+                  </p>
 
-                    <p className="mt-2 text-slate-300">
-                      Eligible queue records will be linked to IPO
-                      candidates. This will not verify or publish IPOs.
-                    </p>
+                  <p className="mt-2 text-slate-300">
+                    Eligible queue and evidence records will be linked.
+                    Evidence verification and IPO publication will not change.
+                  </p>
 
-                    <button
-                      type="button"
-                      onClick={() => runMatching(true)}
-                      disabled={loading}
-                      className="mt-4 rounded-lg bg-amber-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
-                    >
-                      {loading ? "Linking..." : "Confirm Linking"}
-                    </button>
-                  </div>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => runMatching(true)}
+                    disabled={loading}
+                    className="mt-4 rounded-lg bg-amber-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
+                  >
+                    {loading ? "Linking..." : "Confirm Linking"}
+                  </button>
+                </div>
+              )}
             </>
           ) : (
             <p className="text-red-400">

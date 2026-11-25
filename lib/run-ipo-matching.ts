@@ -41,6 +41,7 @@ type MatchPair = {
   second_source: string;
   similarity_score: number;
   issue_type: string;
+  match_scope: "cross_source" | "same_source";
 };
 
 type SimilarityPair = {
@@ -53,7 +54,8 @@ type SimilarityPair = {
   strong_match: boolean;
   first_ipo_type: string | null;
   second_ipo_type: string | null;
-  issue_type_status: "match" | "mismatch" | "missing";
+  issue_type_status: "match" | "mismatch";
+  match_scope: "cross_source" | "same_source";
 };
 
 type DiagnosticPair = {
@@ -61,6 +63,7 @@ type DiagnosticPair = {
   first_source: string;
   second_company: string;
   second_source: string;
+  match_scope: "cross_source" | "same_source";
 };
 
 function getMatchTokens(name: string): Set<string> {
@@ -97,7 +100,7 @@ export async function runIpoMatching() {
   const records: QueueRecord[] = [];
   let offset = 0;
 
-  // READ ONLY: fetch queue records.
+  // READ ONLY: Fetch queue records.
   while (true) {
     const { data, error } = await supabaseAdmin
       .from("ipo_import_queue")
@@ -136,7 +139,7 @@ export async function runIpoMatching() {
     statusCounts[status] = (statusCounts[status] || 0) + 1;
   }
 
-  // Only DRHP-filed IPOs enter Upcoming IPO matching.
+  // Only DRHP-filed IPOs enter Upcoming matching.
   const upcomingRecords = records.filter(
     (record) =>
       (record.detected_status || "").trim().toLowerCase() ===
@@ -176,7 +179,7 @@ export async function runIpoMatching() {
     }
   );
 
-  // Records without a recognized IPO type are not compared.
+  // Missing or unknown IPO types are excluded from comparisons.
   const eligibleRecords = prepared.filter(
     (record) =>
       record.normalizedType === "mainboard" ||
@@ -184,8 +187,7 @@ export async function runIpoMatching() {
   );
 
   const missingOrUnknownTypeRecords = prepared.filter(
-    (record) =>
-      !record.normalizedType
+    (record) => !record.normalizedType
   );
 
   const sourceCounts: Record<string, number> = {};
@@ -204,34 +206,29 @@ export async function runIpoMatching() {
   const totalPossiblePairs =
     (eligibleRecords.length * (eligibleRecords.length - 1)) / 2;
 
-  let sameSourcePairsExcluded = 0;
-
-  for (const count of Object.values(eligibleSourceCounts)) {
-    sameSourcePairsExcluded +=
-      (count * (count - 1)) / 2;
-  }
-
-  const possibleCrossSourcePairs =
-    totalPossiblePairs - sameSourcePairsExcluded;
-
-  if (possibleCrossSourcePairs > MAX_COMPARISONS) {
+  if (totalPossiblePairs > MAX_COMPARISONS) {
     throw new Error(
-      `Cross-source pair limit exceeded. Safe limit: ${MAX_COMPARISONS}.`
+      `Comparison limit exceeded. Safe limit: ${MAX_COMPARISONS}.`
     );
   }
+
+  let sameSourcePairsConsidered = 0;
+  let crossSourcePairsConsidered = 0;
 
   const bestScores = new Map<string, number>();
   const samplePairs: MatchPair[] = [];
   const sampleNoTokenOverlapPairs: DiagnosticPair[] = [];
   const topSimilarityPairs: SimilarityPair[] = [];
 
-  let crossSourcePairsConsidered = 0;
   let comparisons = 0;
   let typeMismatchPairs = 0;
-  let typeMissingPairs = 0;
+  let typeMissingPairs = missingOrUnknownTypeRecords.length;
   let tokenOverlapPairs = 0;
   let noTokenOverlapPairs = 0;
+
   let candidatePairs = 0;
+  let sameSourceCandidatePairs = 0;
+  let crossSourceCandidatePairs = 0;
 
   for (let i = 0; i < eligibleRecords.length; i++) {
     const first = eligibleRecords[i];
@@ -239,14 +236,19 @@ export async function runIpoMatching() {
     for (let j = i + 1; j < eligibleRecords.length; j++) {
       const second = eligibleRecords[j];
 
-      if (first.source_name === second.source_name) {
-        continue;
+      const matchScope =
+        first.source_name === second.source_name
+          ? "same_source"
+          : "cross_source";
+
+      if (matchScope === "same_source") {
+        sameSourcePairsConsidered++;
+      } else {
+        crossSourcePairsConsidered++;
       }
 
-      crossSourcePairsConsidered++;
-
-      // Mainboard only compares with Mainboard.
-      // SME only compares with SME.
+      // Mainboard compares only with Mainboard.
+      // SME compares only with SME.
       if (first.normalizedType !== second.normalizedType) {
         typeMismatchPairs++;
         continue;
@@ -271,10 +273,10 @@ export async function runIpoMatching() {
             first_source: first.source_name,
             second_company: second.company_name,
             second_source: second.source_name,
+            match_scope: matchScope,
           });
         }
 
-        // Do not display unrelated 0% pairs as possible matches.
         continue;
       }
 
@@ -304,6 +306,7 @@ export async function runIpoMatching() {
         first_ipo_type: first.ipo_type,
         second_ipo_type: second.ipo_type,
         issue_type_status: "match",
+        match_scope: matchScope,
       });
 
       if (!strongMatch || score < STRONG_MATCH_THRESHOLD) {
@@ -311,6 +314,12 @@ export async function runIpoMatching() {
       }
 
       candidatePairs++;
+
+      if (matchScope === "same_source") {
+        sameSourceCandidatePairs++;
+      } else {
+        crossSourceCandidatePairs++;
+      }
 
       bestScores.set(
         first.id,
@@ -332,12 +341,13 @@ export async function runIpoMatching() {
           second_source: second.source_name,
           similarity_score: score,
           issue_type: first.normalizedType,
+          match_scope: matchScope,
         });
       }
     }
   }
 
-  // READ ONLY: this function does not update any database records.
+  // READ ONLY: No database updates, linking, verification or publication.
   return {
     mode: "dry_run",
     readOnly: true,
@@ -346,6 +356,7 @@ export async function runIpoMatching() {
     processed: records.length,
     sourceCounts,
     statusCounts,
+    eligibleSourceCounts,
 
     upcomingDrhpRecords: upcomingRecords.length,
     eligibleUpcomingRecords: eligibleRecords.length,
@@ -357,8 +368,7 @@ export async function runIpoMatching() {
     otherStatusExcluded,
 
     totalPossiblePairs,
-    sameSourcePairsExcluded,
-    possibleCrossSourcePairs,
+    sameSourcePairsConsidered,
     crossSourcePairsConsidered,
 
     comparisons,
@@ -369,6 +379,8 @@ export async function runIpoMatching() {
     noTokenOverlapPairs,
 
     candidatePairs,
+    sameSourceCandidatePairs,
+    crossSourceCandidatePairs,
     recordsWithCandidates: bestScores.size,
 
     topSimilarityPairs,

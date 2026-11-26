@@ -1,4 +1,3 @@
-
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -14,10 +13,15 @@ const NSE_URL =
 
 const HEADERS = {
   "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  Accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.9",
+  "Cache-Control": "no-cache",
   Referer: "https://www.nseindia.com/",
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "same-origin",
 };
 
 type Listing = {
@@ -41,7 +45,9 @@ type QueueRecord = {
 function jsonResponse(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
-    headers: { "Cache-Control": "no-store" },
+    headers: {
+      "Cache-Control": "no-store",
+    },
   });
 }
 
@@ -60,9 +66,18 @@ function cleanText(value: string): string {
 
 function parseDate(value: string): string | null {
   const months: Record<string, string> = {
-    jan: "01", feb: "02", mar: "03", apr: "04",
-    may: "05", jun: "06", jul: "07", aug: "08",
-    sep: "09", oct: "10", nov: "11", dec: "12",
+    jan: "01",
+    feb: "02",
+    mar: "03",
+    apr: "04",
+    may: "05",
+    jun: "06",
+    jul: "07",
+    aug: "08",
+    sep: "09",
+    oct: "10",
+    nov: "11",
+    dec: "12",
   };
 
   const match = value.match(
@@ -72,9 +87,11 @@ function parseDate(value: string): string | null {
   if (!match) return null;
 
   const day = Number(match[1]);
+
   const month = /^\d+$/.test(match[2])
     ? Number(match[2])
     : Number(months[match[2].slice(0, 3).toLowerCase()]);
+
   const year = Number(match[3]);
 
   if (
@@ -103,6 +120,7 @@ function parseDate(value: string): string | null {
 
 function parseListings(html: string): Listing[] {
   const rows = html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+
   const listings: Listing[] = [];
 
   for (const row of rows) {
@@ -128,6 +146,7 @@ function parseListings(html: string): Listing[] {
     }
 
     if (!/^[A-Z0-9._&-]{1,30}$/.test(symbol)) continue;
+
     if (!/^[A-Z]{2}[A-Z0-9]{10}$/.test(isin)) continue;
 
     if (["N0", "N1", "N2", "N3"].includes(series)) continue;
@@ -152,37 +171,62 @@ function parseListings(html: string): Listing[] {
   return listings;
 }
 
+// Fetch NSE page with detailed error reporting.
 async function fetchNseListings(): Promise<Listing[]> {
-  const response = await fetch(NSE_URL, {
-    method: "GET",
-    cache: "no-store",
-    redirect: "error",
-    signal: AbortSignal.timeout(25000),
-    headers: HEADERS,
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(NSE_URL, {
+      method: "GET",
+      cache: "no-store",
+      redirect: "follow",
+      signal: AbortSignal.timeout(30000),
+      headers: HEADERS,
+    });
+  } catch (error) {
+    const err = error as Error & {
+      cause?: {
+        code?: string;
+        message?: string;
+      };
+    };
+
+    throw new Error(
+      `NSE network request failed: ${err.message}. ` +
+        `Cause: ${
+          err.cause?.code ||
+          err.cause?.message ||
+          "Not available"
+        }`
+    );
+  }
 
   if (!response.ok) {
-    throw new Error(`NSE returned HTTP ${response.status}`);
+    throw new Error(
+      `NSE returned HTTP ${response.status}. Final URL: ${response.url}`
+    );
   }
 
   const html = await response.text();
 
   if (!html || html.length < 500) {
-    throw new Error("NSE returned an empty or incomplete page.");
+    throw new Error(
+      `NSE returned incomplete HTML. Length: ${html.length}`
+    );
   }
 
   const listings = parseListings(html);
 
   if (listings.length === 0) {
     throw new Error(
-      "No equity listing rows parsed. NSE page structure needs verification."
+      `NSE page fetched but no listing rows parsed. HTML length: ${html.length}. Page structure may have changed.`
     );
   }
 
   return listings;
 }
 
-// READ-ONLY MODE: Existing behavior preserved.
+// READ-ONLY MODE.
 async function runDryRun() {
   const listings = await fetchNseListings();
 
@@ -196,7 +240,9 @@ async function runDryRun() {
       .limit(5000);
 
   if (queueError) {
-    throw new Error(`IPO queue read failed: ${queueError.message}`);
+    throw new Error(
+      `IPO queue read failed: ${queueError.message}`
+    );
   }
 
   const queue = (queueRows || []) as QueueRecord[];
@@ -214,8 +260,10 @@ async function runDryRun() {
       if (!item.ipo_type) return false;
 
       return (
-        normalizeCompanyName(item.company_name) === normalizedName &&
-        item.ipo_type.toLowerCase() === listing.ipoType.toLowerCase()
+        normalizeCompanyName(item.company_name) ===
+          normalizedName &&
+        item.ipo_type.toLowerCase() ===
+          listing.ipoType.toLowerCase()
       );
     });
 
@@ -259,7 +307,8 @@ async function runDryRun() {
       ipoType: listing.ipoType,
       matchStatus,
       identityVerified: false,
-      matchMethod: "Exact normalized company name + IPO type only",
+      matchMethod:
+        "Exact normalized company name + IPO type only",
       matchedQueue,
     };
   });
@@ -284,7 +333,8 @@ async function runDryRun() {
   };
 }
 
-// EXPLICIT LINK MODE: Calls the protected database function.
+// EXPLICIT LINK MODE.
+// Do not run until dry-run results are reviewed.
 async function runNseTypeLinking() {
   const listings = await fetchNseListings();
 
@@ -298,7 +348,9 @@ async function runNseTypeLinking() {
     if (!normalizedName) continue;
 
     const group = groups.get(normalizedName) || [];
+
     group.push(listing);
+
     groups.set(normalizedName, group);
   }
 
@@ -309,7 +361,6 @@ async function runNseTypeLinking() {
   const results: Array<Record<string, unknown>> = [];
 
   for (const [normalizedName, group] of groups) {
-    // Multiple NSE rows for the same normalized name are not auto-linked.
     if (group.length !== 1) {
       skipped++;
 
@@ -394,7 +445,10 @@ export async function POST(request: NextRequest) {
 
   if (!origin || origin !== request.nextUrl.origin) {
     return jsonResponse(
-      { success: false, error: "Invalid request origin." },
+      {
+        success: false,
+        error: "Invalid request origin.",
+      },
       403
     );
   }
@@ -436,7 +490,8 @@ export async function POST(request: NextRequest) {
         success: true,
         source: "NSE Recent Equity Listings",
         collection: result,
-        message: "NSE to SEBI IPO type linking completed.",
+        message:
+          "NSE to SEBI IPO type linking completed.",
       });
     }
 
@@ -446,21 +501,35 @@ export async function POST(request: NextRequest) {
       success: true,
       source: "NSE Recent Equity Listings",
       collection: result,
-      message: "Read-only NSE listing dry run completed.",
+      message:
+        "Read-only NSE listing dry run completed.",
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Unknown NSE listing error";
+    const err = error as Error & {
+      cause?: {
+        code?: string;
+        message?: string;
+      };
+    };
 
-    console.error("NSE listing collector failed:", message);
+    const message =
+      err.message || "Unknown NSE listing error";
+
+    console.error("NSE listing collector failed:", {
+      message,
+      cause: err.cause,
+      stack: err.stack,
+    });
 
     return jsonResponse(
       {
         success: false,
         source: "NSE Recent Equity Listings",
         error: message,
+        cause:
+          err.cause?.code ||
+          err.cause?.message ||
+          null,
       },
       502
     );

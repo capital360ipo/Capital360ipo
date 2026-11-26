@@ -179,16 +179,25 @@ function extractCompanyName(title: string): string {
     .trim();
 }
 
-function isValidFilingTitle(title: string): boolean {
-  if (!/\b(?:U?DRHP)\b|Draft Red Herring/i.test(title)) {
+/**
+ * SEBI listing rows may use "Draft Abridged Prospectus"
+ * as the anchor title while DRHP/UDRHP appears elsewhere
+ * in the same row.
+ *
+ * Validate the complete row, not only the anchor text.
+ */
+function isValidFilingRow(rowText: string, title: string): boolean {
+  const combined = `${rowText} ${title}`;
+
+  if (/\b(?:addendum|corrigendum)\b/i.test(combined)) {
     return false;
   }
 
-  if (/addendum|corrigendum/i.test(title)) {
-    return false;
-  }
-
-  return true;
+  return (
+    /\b(?:U?DRHP)\b/i.test(combined) ||
+    /\bDraft\s+Abridged\s+Prospectus\b/i.test(combined) ||
+    /\bDraft\s+Red\s+Herring\s+Prospectus\b/i.test(combined)
+  );
 }
 
 function isValidSebiUrl(url: URL): boolean {
@@ -246,6 +255,66 @@ function extractPdfLinks(html: string, baseUrl: string): string[] {
   }
 
   return [...results];
+}
+
+/**
+ * Conservative issuer matching:
+ * A PDF is used for classification only if its extracted text
+ * contains a strong match for the filing company.
+ */
+function normalizeIssuerTokens(value: string): string[] {
+  const ignored = new Set([
+    "limited",
+    "ltd",
+    "private",
+    "pvt",
+    "company",
+    "co",
+    "incorporated",
+    "inc",
+    "corporation",
+    "corp",
+  ]);
+
+  return [
+    ...new Set(
+      value
+        .toLowerCase()
+        .replace(/&/g, " and ")
+        .replace(/[^a-z0-9]+/g, " ")
+        .split(/\s+/)
+        .filter(
+          (token) =>
+            token.length > 1 &&
+            !ignored.has(token)
+        )
+    ),
+  ];
+}
+
+function isPdfIssuerMatch(
+  companyName: string,
+  pdfText: string
+): boolean {
+  const companyTokens = normalizeIssuerTokens(companyName);
+
+  if (companyTokens.length === 0) return false;
+
+  const normalizedPdfText = ` ${pdfText
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")} `;
+
+  const matchedTokens = companyTokens.filter((token) =>
+    normalizedPdfText.includes(` ${token} `)
+  );
+
+  if (companyTokens.length === 1) {
+    return matchedTokens.length === 1 &&
+      companyTokens[0].length >= 3;
+  }
+
+  return matchedTokens.length / companyTokens.length >= 0.8;
 }
 
 function classifyIpoType(text: string): {
@@ -308,7 +377,8 @@ function classifyIpoType(text: string): {
 }
 
 async function fetchDocumentClassification(
-  filingUrl: string
+  filingUrl: string,
+  companyName: string
 ): Promise<DocumentResult> {
   const emptyResult: DocumentResult = {
     pdfUrl: null,
@@ -363,9 +433,12 @@ async function fetchDocumentClassification(
 
     let selectedPdfUrl: string | null = null;
     let selectedPdfHash: string | null = null;
+
     let downloadAttempts = 0;
     let downloadFailures = 0;
     let parseFailures = 0;
+    let issuerMismatches = 0;
+    let matchingIssuerPdfs = 0;
 
     for (const pdfUrl of pdfLinks) {
       downloadAttempts++;
@@ -430,9 +503,19 @@ async function fetchDocumentClassification(
           continue;
         }
 
+        // Never classify a PDF until its issuer matches the filing.
+        if (!isPdfIssuerMatch(companyName, pdfText)) {
+          issuerMismatches++;
+          continue;
+        }
+
+        matchingIssuerPdfs++;
+
         const classification = classifyIpoType(pdfText);
 
-        if (!selectedPdfUrl) {
+        // Select only a PDF whose issuer has been matched.
+        // Prefer a PDF that contains an explicit IPO type signal.
+        if (!selectedPdfUrl || classification.ipoType) {
           selectedPdfUrl = pdfUrl;
           selectedPdfHash = sha256(buffer);
         }
@@ -453,16 +536,6 @@ async function fetchDocumentClassification(
 
     const uniqueTypes = [...new Set(detectedTypes)];
 
-    if (uniqueTypes.length === 1 && selectedPdfUrl) {
-      return {
-        pdfUrl: selectedPdfUrl,
-        ipoType: uniqueTypes[0],
-        status: "type_detected",
-        signals: [...new Set(allSignals)],
-        pdfHash: selectedPdfHash,
-      };
-    }
-
     if (uniqueTypes.length > 1) {
       return {
         pdfUrl: selectedPdfUrl,
@@ -473,7 +546,17 @@ async function fetchDocumentClassification(
       };
     }
 
-    if (selectedPdfUrl) {
+    if (uniqueTypes.length === 1 && selectedPdfUrl) {
+      return {
+        pdfUrl: selectedPdfUrl,
+        ipoType: uniqueTypes[0],
+        status: "type_detected",
+        signals: [...new Set(allSignals)],
+        pdfHash: selectedPdfHash,
+      };
+    }
+
+    if (matchingIssuerPdfs > 0 && selectedPdfUrl) {
       return {
         pdfUrl: selectedPdfUrl,
         ipoType: null,
@@ -483,23 +566,24 @@ async function fetchDocumentClassification(
       };
     }
 
+    if (issuerMismatches > 0) {
+      return {
+        ...emptyResult,
+        status: "pdf_issuer_mismatch",
+      };
+    }
+
     if (parseFailures > 0) {
       return {
-        pdfUrl: pdfLinks[0],
-        ipoType: null,
+        ...emptyResult,
         status: "pdf_parse_failed",
-        signals: [],
-        pdfHash: null,
       };
     }
 
     if (downloadFailures > 0) {
       return {
-        pdfUrl: pdfLinks[0],
-        ipoType: null,
+        ...emptyResult,
         status: "pdf_download_failed",
-        signals: [],
-        pdfHash: null,
       };
     }
 
@@ -659,21 +743,26 @@ async function collectIpos() {
       for (const link of links) {
         const title = cleanText(link[2]);
 
-        if (!isValidFilingTitle(title)) continue;
-
-        const companyName = extractCompanyName(title);
-
-        if (!companyName || companyName.length < 3) continue;
+        if (!isValidFilingRow(rowText, title)) continue;
 
         let sourceUrl: URL;
 
         try {
-          sourceUrl = new URL(link[1].replace(/&amp;/gi, "&"), SEBI_URL);
+          sourceUrl = new URL(
+            link[1].replace(/&amp;/gi, "&"),
+            SEBI_URL
+          );
         } catch {
           continue;
         }
 
+        // Only official SEBI filing detail pages are accepted here.
+        // PDF links are handled separately on the detail page.
         if (!isValidSebiUrl(sourceUrl)) continue;
+
+        const companyName = extractCompanyName(title);
+
+        if (!companyName || companyName.length < 3) continue;
 
         filings.set(sourceUrl.href, {
           companyName,
@@ -707,7 +796,8 @@ async function collectIpos() {
       detected++;
 
       const document = await fetchDocumentClassification(
-        filing.sourceUrl
+        filing.sourceUrl,
+        filing.companyName
       );
 
       documentStatusCounts[document.status] =
@@ -821,7 +911,8 @@ async function collectIpos() {
             detected_ipo_type: document.ipoType,
             classification_signals: document.signals,
             pdf_sha256: document.pdfHash,
-            classification_method: "explicit_official_pdf_text_only",
+            issuer_match_verified: true,
+            classification_method: "issuer_matched_official_pdf_text_only",
           },
         };
 

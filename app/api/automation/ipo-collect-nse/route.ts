@@ -1,3 +1,4 @@
+
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -151,7 +152,7 @@ function parseListings(html: string): Listing[] {
   return listings;
 }
 
-async function runDryRun() {
+async function fetchNseListings(): Promise<Listing[]> {
   const response = await fetch(NSE_URL, {
     method: "GET",
     cache: "no-store",
@@ -178,7 +179,13 @@ async function runDryRun() {
     );
   }
 
-  // READ ONLY: Fetch existing IPO queue records.
+  return listings;
+}
+
+// READ-ONLY MODE: Existing behavior preserved.
+async function runDryRun() {
+  const listings = await fetchNseListings();
+
   const { data: queueRows, error: queueError } =
     await supabaseAdmin
       .from("ipo_import_queue")
@@ -273,7 +280,112 @@ async function runDryRun() {
     automaticPublication: 0,
     identityVerification: 0,
     note:
-      "Possible matches are based only on company name and IPO type. Symbol and ISIN are displayed for manual identity verification. No database records are changed.",
+      "Possible matches are based only on company name and IPO type. No database records are changed.",
+  };
+}
+
+// EXPLICIT LINK MODE: Calls the protected database function.
+async function runNseTypeLinking() {
+  const listings = await fetchNseListings();
+
+  const groups = new Map<string, Listing[]>();
+
+  for (const listing of listings) {
+    const normalizedName = normalizeCompanyName(
+      listing.companyName
+    );
+
+    if (!normalizedName) continue;
+
+    const group = groups.get(normalizedName) || [];
+    group.push(listing);
+    groups.set(normalizedName, group);
+  }
+
+  let linked = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  const results: Array<Record<string, unknown>> = [];
+
+  for (const [normalizedName, group] of groups) {
+    // Multiple NSE rows for the same normalized name are not auto-linked.
+    if (group.length !== 1) {
+      skipped++;
+
+      results.push({
+        companyName: group[0].companyName,
+        reason: "ambiguous_nse_listing_rows",
+        rows: group.length,
+      });
+
+      continue;
+    }
+
+    const listing = group[0];
+
+    const { data, error } = await supabaseAdmin.rpc(
+      "link_nse_ipo_type_to_sebi",
+      {
+        p_company_name: listing.companyName,
+        p_normalized_company_name: normalizedName,
+        p_source_url: NSE_URL,
+        p_security_type: listing.securityType,
+        p_series: listing.series,
+        p_symbol: listing.symbol,
+        p_isin: listing.isin,
+        p_listing_date: listing.listingDate,
+      }
+    );
+
+    if (error) {
+      failed++;
+
+      results.push({
+        companyName: listing.companyName,
+        symbol: listing.symbol,
+        success: false,
+        reason: "database_function_error",
+        error: error.message,
+      });
+
+      continue;
+    }
+
+    const result =
+      data && typeof data === "object"
+        ? (data as Record<string, unknown>)
+        : {};
+
+    if (result.success === true) {
+      linked++;
+    } else {
+      skipped++;
+    }
+
+    results.push({
+      companyName: listing.companyName,
+      symbol: listing.symbol,
+      isin: listing.isin,
+      listingDate: listing.listingDate,
+      ...result,
+    });
+  }
+
+  return {
+    mode: "NSE_SEBI_TYPE_LINKING",
+    detected: listings.length,
+    uniqueCompanyNames: groups.size,
+    linked,
+    skipped,
+    failed,
+    results: results.slice(0, 100),
+    resultLimit: 100,
+    automaticApproval: false,
+    automaticVerification: false,
+    automaticPublication: false,
+    note:
+      "Only exact unique SEBI queue matches with missing IPO type are eligible. Review, verification and publication statuses are not changed.",
   };
 }
 
@@ -294,6 +406,40 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    let body: { mode?: string } = {};
+
+    try {
+      body = await request.clone().json();
+    } catch {
+      body = {};
+    }
+
+    const requestedMode =
+      request.nextUrl.searchParams.get("mode") ||
+      body.mode ||
+      "dry-run";
+
+    if (!["dry-run", "link"].includes(requestedMode)) {
+      return jsonResponse(
+        {
+          success: false,
+          error: "Invalid mode. Use dry-run or link.",
+        },
+        400
+      );
+    }
+
+    if (requestedMode === "link") {
+      const result = await runNseTypeLinking();
+
+      return jsonResponse({
+        success: true,
+        source: "NSE Recent Equity Listings",
+        collection: result,
+        message: "NSE to SEBI IPO type linking completed.",
+      });
+    }
+
     const result = await runDryRun();
 
     return jsonResponse({
@@ -306,16 +452,15 @@ export async function POST(request: NextRequest) {
     const message =
       error instanceof Error
         ? error.message
-        : "Unknown NSE listing dry run error";
+        : "Unknown NSE listing error";
 
-    console.error("NSE listing dry run failed:", message);
+    console.error("NSE listing collector failed:", message);
 
     return jsonResponse(
       {
         success: false,
         source: "NSE Recent Equity Listings",
         error: message,
-        databaseWrites: 0,
       },
       502
     );
